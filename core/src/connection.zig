@@ -49,8 +49,8 @@ pub fn close(self: *Connection) void {
 }
 
 pub fn send(self: Connection, data: anytype) !void {
-    log.debug("Sending {any}", .{data});
     const T = @TypeOf(data);
+    log.debug("Sending {any} {any}", .{ @typeName(T), data });
 
     switch (@typeInfo(T)) {
         .Pointer => |p| return if (p.size == .Slice) self.sendSlice(p.child, data) else @compileError("Invalid type " ++ @typeName(T)),
