@@ -161,11 +161,11 @@ fn mainWindow(self: *App) !void {
         if (self.oven.connection) |con| {
             if (zgui.beginMenu(@ptrCast(&con.port_name), true)) {
                 if (zgui.menuItem("Modo programacion", .{})) {
-                    try self.oven.sendSingle(u8, Oven.Commands.Talk);
+                    try con.send(Oven.Commands.Talk);
                 }
 
                 if (zgui.menuItem("Modo normal", .{})) {
-                    try self.oven.sendSingle(u8, Oven.Commands.Stop);
+                    try con.send(Oven.Commands.Stop);
                 }
 
                 if (zgui.menuItem("Desconectar", .{})) {
@@ -250,7 +250,6 @@ fn mainWindow(self: *App) !void {
     if (self.active == .curve_maker) {
         if (try curveMaker(&self.oven.curve, avail[0], avail[1])) |index| {
             try self.oven.sendCurve(index);
-
             zgui.openPopup("SuccessPopup", .{});
         }
     } else if (self.active == .monitor) {
@@ -269,15 +268,9 @@ fn mainWindow(self: *App) !void {
         };
         if (testing(&Testing.char, &Testing.hw, &Testing.w)) |index| {
             switch (index) {
-                0 => {
-                    try self.oven.sendSingle(u8, Testing.char);
-                },
-                1 => {
-                    try self.oven.sendSingle(u16, Testing.hw);
-                },
-                2 => {
-                    try self.oven.sendSingle(u32, Testing.w);
-                },
+                0 => try self.oven.send(Testing.char),
+                1 => try self.oven.send(Testing.hw),
+                2 => try self.oven.send(Testing.w),
                 else => {},
             }
         }
@@ -562,29 +555,3 @@ fn curveSelector() usize {
 
     return S.current;
 }
-
-// fn config() void {
-//         if (zgui.collapsingHeader("Style")) {
-//         }
-//
-//
-//     if (zgui.collapsingHeader("Window options"))
-//     {
-//         if (zgui.beginTable("split", .{ .column = 3 })) {
-//             zgui.tableNextColumn(); zgui.checkbox("No titlebar", &no_titlebar);
-//             zgui.tableNextColumn(); zgui.checkbox("No scrollbar", &no_scrollbar);
-//             zgui.tableNextColumn(); zgui.checkbox("No menu", &no_menu);
-//             zgui.tableNextColumn(); zgui.checkbox("No move", &no_move);
-//             zgui.tableNextColumn(); zgui.checkbox("No resize", &no_resize);
-//             zgui.tableNextColumn(); zgui.checkbox("No collapse", &no_collapse);
-//             zgui.tableNextColumn(); zgui.checkbox("No close", &no_close);
-//             zgui.tableNextColumn(); zgui.checkbox("No nav", &no_nav);
-//             zgui.tableNextColumn(); zgui.checkbox("No background", &no_background);
-//             zgui.tableNextColumn(); zgui.checkbox("No bring to front", &no_bring_to_front);
-//             zgui.tableNextColumn(); zgui.checkbox("Unsaved document", &unsaved_document);
-//             zgui.endTable();
-//         }
-//     }
-//
-//
-// }

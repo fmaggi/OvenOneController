@@ -43,7 +43,7 @@ pub fn deinit(self: *Oven) void {
 
 pub fn connect(self: *Oven, port: Connection.SerialPortDescription) !void {
     const con = try Connection.open(port);
-    try con.sendByte(Commands.Talk);
+    try con.send(Commands.Talk);
     self.connection = con;
 }
 
@@ -51,29 +51,22 @@ pub fn disconnect(self: *Oven) void {
     if (self.connection) |*con| {
         con.close();
     }
+
     self.connection = null;
     self.curve.reset();
     self.expected_curve.reset();
 }
 
-pub fn send(self: Oven, comptime T: type, data: []T) !void {
+pub fn send(self: Oven, data: anytype) !void {
     const con = self.connection orelse return Connection.Error.NoConnection;
-
-    try con.send(T, data);
-}
-
-pub fn sendSingle(self: Oven, comptime T: type, data: T) !void {
-    const con = self.connection orelse return Connection.Error.NoConnection;
-
-    const buf = [_]T{data};
-    try con.send(T, &buf);
+    try con.send(data);
 }
 
 pub fn startMonitor(self: *Oven, curve_index: u8) !void {
     var con = self.connection orelse return Connection.Error.NoConnection;
 
-    try con.sendByte(Commands.Start);
-    try con.sendByte(curve_index);
+    try con.send(Commands.Start);
+    try con.send(curve_index);
 
     const Monitor = struct {
         const Self = @This();
@@ -120,14 +113,14 @@ pub fn stopMonitor(self: *Oven) !void {
 
     if (self.connection) |*con| {
         con.stopReceive();
-        try con.sendByte(Commands.Stop);
+        try con.send(Commands.Stop);
     }
 }
 
 pub fn getPID(self: *Oven) !void {
     var con = self.connection orelse return Connection.Error.NoConnection;
 
-    try con.sendByte(Commands.PIDGet);
+    try con.send(Commands.PIDGet);
 
     const Getter = struct {
         const Self = @This();
@@ -168,10 +161,10 @@ pub fn getPID(self: *Oven) !void {
 pub fn sendPID(self: Oven) !void {
     const con = self.connection orelse return Connection.Error.NoConnection;
 
-    try con.sendByte(Commands.PIDSet);
+    try con.send(Commands.PIDSet);
 
     const buf = [_]u32{ self.pid.p, self.pid.i, self.pid.d };
-    try con.send(u32, &buf);
+    try con.send(buf);
 }
 
 pub fn sendCurve(self: Oven, curve_index: u8) !void {
@@ -180,7 +173,7 @@ pub fn sendCurve(self: Oven, curve_index: u8) !void {
     var points: [CurvePoints]u16 = undefined;
     try self.curve.getSamples(&points);
 
-    try con.sendByte(Commands.Curve);
-    try con.sendByte(curve_index);
-    try con.send(u16, &points);
+    try con.send(Commands.Curve);
+    try con.send(curve_index);
+    try con.send(points);
 }

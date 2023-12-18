@@ -48,26 +48,42 @@ pub fn close(self: *Connection) void {
     self.* = undefined;
 }
 
-pub fn send(self: Connection, comptime T: type, data: []const T) !void {
+pub fn send(self: Connection, data: anytype) !void {
     log.debug("Sending {any}", .{data});
+    const T = @TypeOf(data);
 
-    const size = @sizeOf(T);
-
-    for (data) |elem| {
-        const bytes: [size]u8 = @bitCast(elem);
-        inline for (0..size) |i| {
-            const j = comptime switch (native_endian) {
-                .Little => i,
-                .Big => size - i - 1,
-            };
-            try self.fd.writer().writeByte(bytes[j]);
-        }
+    switch (@typeInfo(T)) {
+        .Pointer => |p| return if (p.size == .Slice) self.sendSlice(p.child, data) else @compileError("Invalid type " ++ @typeName(T)),
+        .Array => |a| return self.sendSlice(a.child, &data),
+        .Int => return self.sendSingle(T, data),
+        .ComptimeInt => return self.sendSingle(isize, @as(isize, data)),
+        else => @compileError("Invalid type " ++ @typeName(T)),
     }
 }
 
-pub fn sendByte(self: Connection, data: u8) !void {
-    log.debug("Sending {any}", .{data});
-    try self.fd.writer().writeByte(data);
+fn sendSlice(self: Connection, comptime T: type, data: []const T) !void {
+    for (data) |elem| {
+        try sendSingle(self, T, elem);
+    }
+}
+
+fn sendSingle(self: Connection, comptime T: type, data: T) !void {
+    const size = @sizeOf(T);
+
+    switch (size) {
+        0 => return,
+        1 => try self.fd.writer().writeByte(@bitCast(data)),
+        else => {
+            const bytes: [size]u8 = @bitCast(data);
+            inline for (0..size) |i| {
+                const j = comptime switch (native_endian) {
+                    .Little => i,
+                    .Big => size - i - 1,
+                };
+                try self.fd.writer().writeByte(bytes[j]);
+            }
+        },
+    }
 }
 
 pub fn startReceive(self: *Connection, comptime D: type, sink: anytype) !void {
