@@ -360,7 +360,7 @@ fn curveMaker(curve: *Oven.TemperatureCurve, w: f32, h: f32) !?u8 {
         plotSetup("Crear Curva", h, false);
         defer plotDone();
 
-        plot("curva", curve);
+        plotEditable("curva", curve);
     }
 
     const i: u8 = @truncate(index);
