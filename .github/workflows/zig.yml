@@ -1,0 +1,17 @@
+name: zig CI
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: build linux
+      run: zig build -Dtarget=x86_64-linux -Doptimize=ReleaseSafe
+    - name: build windows
+      run: zig build -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
