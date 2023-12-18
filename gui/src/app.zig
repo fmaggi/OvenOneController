@@ -109,16 +109,31 @@ pub fn run(self: *App) !void {
 }
 
 pub fn update(self: *App) !void {
-    const S = struct {
-        var config_open: bool = false;
-        var show_demo: bool = false;
-    };
-
     zgui.backend.newFrame(
         self.gctx.swapchain_descriptor.width,
         self.gctx.swapchain_descriptor.height,
     );
 
+    widgets.modal("ZeroSizePopup", "La curva esta vacia!", .{});
+    widgets.modal("BadCurvePopup", "Curva invalida!", .{});
+    widgets.modal("GradTooHighPopup", "La pendiente de la curva es demasiado alta", .{});
+    widgets.modal("NoConnectionPopup", "Conexion inexistente", .{});
+    widgets.modal("SuccessPopup", "Un exito!", .{});
+
+    self.mainWindow() catch |e| {
+        std.debug.print("{any}\n", .{e});
+        switch (e) {
+            Oven.TemperatureCurve.Error.NotEnoughPoints => zgui.openPopup("ZeroSizePopup", .{}),
+            Oven.TemperatureCurve.Error.BadCurve => zgui.openPopup("BadCurvePopup", .{}),
+            Oven.TemperatureCurve.Error.GradientTooHigh => zgui.openPopup("GradTooHighPopup", .{}),
+            Oven.Connection.Error.NoConnection => zgui.openPopup("NoConnectionPopup", .{}),
+            else => return e,
+        }
+        return;
+    };
+}
+
+fn mainWindow(self: *App) !void {
     const viewport = zgui.getMainViewport();
     const pos = viewport.getWorkPos();
     const size = viewport.getWorkSize();
@@ -137,16 +152,22 @@ pub fn update(self: *App) !void {
 
     _ = zgui.begin("Oven One Controller", .{ .popen = &self.is_open, .flags = windowFlags });
     defer zgui.end();
-
-    widgets.modal("ZeroSizePopup", "La curva esta vacia!", .{});
-    widgets.modal("BadCurvePopup", "Curva invalida!", .{});
-    widgets.modal("GradTooHighPopup", "La pendiente de la curva es demasiado alta", .{});
-    widgets.modal("NoConnectionPopup", "Conexion inexistente", .{});
-    widgets.modal("SuccessPopup", "Un exito!", .{});
+    const S = struct {
+        var config_open: bool = false;
+        var show_demo: bool = false;
+    };
 
     if (zgui.beginMenuBar()) {
         if (self.oven.connection) |con| {
             if (zgui.beginMenu(@ptrCast(&con.port_name), true)) {
+                if (zgui.menuItem("Modo programacion", .{})) {
+                    try self.oven.sendSingle(u8, Oven.Commands.Talk);
+                }
+
+                if (zgui.menuItem("Modo normal", .{})) {
+                    try self.oven.sendSingle(u8, Oven.Commands.Stop);
+                }
+
                 if (zgui.menuItem("Desconectar", .{})) {
                     self.oven.disconnect();
                 }
@@ -177,7 +198,7 @@ pub fn update(self: *App) !void {
         if (zgui.beginMenu("Herramientas", true)) {
             if (zgui.menuItem("Crear curva", .{})) {
                 if (self.active == .monitor) {
-                    self.oven.stopMonitor() catch {};
+                    try self.oven.stopMonitor();
                 }
                 self.active = .curve_maker;
             }
@@ -190,12 +211,12 @@ pub fn update(self: *App) !void {
             }
 
             if (zgui.menuItem("Editor PID", .{})) {
-                try self.oven.getPID();
+                self.oven.getPID() catch {};
                 self.active = .pid_editor;
                 if (self.active == .curve_maker) {
                     self.oven.curve.reset();
                 } else if (self.active == .monitor) {
-                    self.oven.stopMonitor() catch {};
+                    try self.oven.stopMonitor();
                 }
             }
 
@@ -203,7 +224,7 @@ pub fn update(self: *App) !void {
                 if (self.active == .curve_maker) {
                     self.oven.curve.reset();
                 } else if (self.active == .monitor) {
-                    self.oven.stopMonitor() catch {};
+                    try self.oven.stopMonitor();
                 }
                 self.active = .testing;
             }
@@ -228,39 +249,17 @@ pub fn update(self: *App) !void {
     const avail = zgui.getContentRegionAvail();
     if (self.active == .curve_maker) {
         if (try curveMaker(&self.oven.curve, avail[0], avail[1])) |index| {
-            self.oven.sendCurve(index) catch |e| {
-                std.debug.print("{any}\n", .{e});
-                switch (e) {
-                    Oven.TemperatureCurve.Error.NotEnoughPoints => zgui.openPopup("ZeroSizePopup", .{}),
-                    Oven.TemperatureCurve.Error.BadCurve => zgui.openPopup("BadCurvePopup", .{}),
-                    Oven.TemperatureCurve.Error.GradientTooHigh => zgui.openPopup("GradTooHighPopup", .{}),
-                    Oven.Connection.Error.NoConnection => zgui.openPopup("NoConnectionPopup", .{}),
-                    else => return e,
-                }
-                return;
-            };
+            try self.oven.sendCurve(index);
 
             zgui.openPopup("SuccessPopup", .{});
         }
     } else if (self.active == .monitor) {
         if (monitor(&self.oven.curve, &self.oven.expected_curve, avail[0], avail[1])) |index| {
-            self.oven.startMonitor(index) catch |e| {
-                if (e == Oven.Connection.Error.NoConnection) {
-                    zgui.openPopup("NoConnectionPopup", .{});
-                } else {
-                    return e;
-                }
-            };
+            try self.oven.startMonitor(index);
         }
     } else if (self.active == .pid_editor) {
         if (pidEditor(&self.oven.pid, avail[0], avail[1])) {
-            self.oven.sendPID() catch |e| {
-                if (e == Oven.Connection.Error.NoConnection) {
-                    zgui.openPopup("NoConnectionPopup", .{});
-                } else {
-                    return e;
-                }
-            };
+            try self.oven.sendPID();
         }
     } else if (self.active == .testing) {
         const Testing = struct {
@@ -271,31 +270,13 @@ pub fn update(self: *App) !void {
         if (testing(&Testing.char, &Testing.hw, &Testing.w)) |index| {
             switch (index) {
                 0 => {
-                    self.oven.sendSingle(u8, Testing.char) catch |e| {
-                        if (e == Oven.Connection.Error.NoConnection) {
-                            zgui.openPopup("NoConnectionPopup", .{});
-                        } else {
-                            return e;
-                        }
-                    };
+                    try self.oven.sendSingle(u8, Testing.char);
                 },
                 1 => {
-                    self.oven.sendSingle(u16, Testing.hw) catch |e| {
-                        if (e == Oven.Connection.Error.NoConnection) {
-                            zgui.openPopup("NoConnectionPopup", .{});
-                        } else {
-                            return e;
-                        }
-                    };
+                    try self.oven.sendSingle(u16, Testing.hw);
                 },
                 2 => {
-                    self.oven.sendSingle(u32, Testing.w) catch |e| {
-                        if (e == Oven.Connection.Error.NoConnection) {
-                            zgui.openPopup("NoConnectionPopup", .{});
-                        } else {
-                            return e;
-                        }
-                    };
+                    try self.oven.sendSingle(u32, Testing.w);
                 },
                 else => {},
             }

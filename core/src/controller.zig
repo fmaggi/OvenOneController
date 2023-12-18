@@ -14,7 +14,7 @@ pub const PID = struct {
     d: u32 = 0,
 };
 
-const Commands = struct {
+pub const Commands = struct {
     pub const Talk = 0xAA;
     pub const Curve = 0xCC;
     pub const PIDGet = 0xDD;
