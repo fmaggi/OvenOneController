@@ -11,27 +11,29 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    if (target.isWindows()) {
+        exe.want_lto = false;
+    }
+
     const controller = b.createModule(.{
         .source_file = .{ .path = "core/src/controller.zig" },
     });
-
-    // const cli_op = b.option(bool, "cli", "Build a cli app");
-    //
-    // const cli = cli_op orelse false;
-    //
-    // const exe = switch (cli) {
-    //     false => @import("gui/build.zig").getExe(b, target, optimize),
-    //     true => {
-    //         std.debug.print("Build not supported yet");
-    //         return;
-    //     },
-    // };
 
     exe.addModule("OvenController", controller);
 
     @import("gui/build.zig").linkLibs(exe);
 
-    b.installArtifact(exe);
+    const triple = target.zigTriple(b.allocator) catch "unknown";
+    const optimize_str = switch (optimize) {
+        .Debug => "Debug",
+        .ReleaseSafe => "ReleaseSafe",
+        .ReleaseFast => "ReleaseFast",
+        .ReleaseSmall => "ReleaseSmall",
+    };
+
+    const dir = b.fmt("{s}/{s}", .{ triple, optimize_str });
+
+    b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{ .dest_dir = .{ .override = .{ .custom = dir } } }).step);
 
     const run_cmd = b.addRunArtifact(exe);
 

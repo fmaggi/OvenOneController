@@ -138,7 +138,7 @@ pub fn getPID(self: *Oven) !void {
         state: State = .P,
 
         pub fn put(g: *Self, data: u32) !Connection.ReceiverAction {
-            log.info("PID got {}", .{data});
+            log.debug("PID got {}", .{data});
             switch (g.state) {
                 .P => {
                     g.pid.p = data;

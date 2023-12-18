@@ -20,7 +20,7 @@ ctx: Context,
 pub const list = serial.list;
 
 pub fn open(port: SerialPortDescription) !Connection {
-    log.info("Opening connection {s}", .{port.display_name});
+    log.debug("Opening connection {s}", .{port.display_name});
 
     const fd = try std.fs.cwd().openFile(port.file_name, .{ .mode = .read_write });
     errdefer fd.close();
@@ -49,7 +49,7 @@ pub fn close(self: *Connection) void {
 }
 
 pub fn send(self: Connection, comptime T: type, data: []const T) !void {
-    log.info("Sending {any}", .{data});
+    log.debug("Sending {any}", .{data});
 
     const size = @sizeOf(T);
 
@@ -66,12 +66,12 @@ pub fn send(self: Connection, comptime T: type, data: []const T) !void {
 }
 
 pub fn sendByte(self: Connection, data: u8) !void {
-    log.info("Sending {any}", .{data});
+    log.debug("Sending {any}", .{data});
     try self.fd.writer().writeByte(data);
 }
 
 pub fn startReceive(self: *Connection, comptime D: type, sink: anytype) !void {
-    log.info("Starting reception", .{});
+    log.debug("Starting reception", .{});
 
     self.ctx.active = false;
     while (self.ctx.running) {}
@@ -83,7 +83,7 @@ pub fn startReceive(self: *Connection, comptime D: type, sink: anytype) !void {
 }
 
 pub fn stopReceive(self: *Connection) void {
-    log.info("Stoping reception", .{});
+    log.debug("Stoping reception", .{});
     self.ctx.active = false;
 }
 
@@ -97,7 +97,7 @@ pub const ReceiverAction = enum { Continue, Stop };
 fn Receiver(comptime D: type) type {
     return struct {
         pub fn receive(fd: std.fs.File, ctx: *Context, sink: anytype) void {
-            log.info("Entering receiver thread {}", .{ctx.active});
+            log.debug("Entering receiver thread {}", .{ctx.active});
 
             ctx.running = true;
             defer ctx.running = false;
@@ -133,7 +133,7 @@ fn Receiver(comptime D: type) type {
                 }
             }
 
-            log.info("Leaving receiver thread", .{});
+            log.debug("Leaving receiver thread", .{});
         }
     };
 }
