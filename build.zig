@@ -33,7 +33,9 @@ pub fn build(b: *std.Build) void {
 
     const dir = b.fmt("{s}/{s}", .{ triple, optimize_str });
 
-    b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{ .dest_dir = .{ .override = .{ .custom = dir } } }).step);
+    const artifact = b.addInstallArtifact(exe, .{ .dest_dir = .{ .override = .{ .custom = dir } } });
+
+    b.getInstallStep().dependOn(&artifact.step);
 
     const run_cmd = b.addRunArtifact(exe);
 

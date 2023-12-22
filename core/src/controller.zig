@@ -15,12 +15,13 @@ pub const PID = struct {
 };
 
 pub const Commands = struct {
-    pub const Talk = 0xAA;
-    pub const Curve = 0xCC;
-    pub const PIDGet = 0xDD;
-    pub const PIDSet = 0xDE;
-    pub const Start = 0xFF;
-    pub const Stop = 0xFE;
+    pub const Talk: u8 = 0xAA;
+    pub const CurveSet: u8 = 0xCC;
+    pub const CurveGet: u8 = 0xCE;
+    pub const PIDGet: u8 = 0xDD;
+    pub const PIDSet: u8 = 0xDE;
+    pub const Start: u8 = 0xFF;
+    pub const Stop: u8 = 0xFE;
 };
 
 const Oven = @This();
@@ -39,6 +40,7 @@ pub fn init(allocator: std.mem.Allocator) Oven {
 pub fn deinit(self: *Oven) void {
     self.disconnect();
     self.curve.deinit();
+    self.expected_curve.deinit();
 }
 
 pub fn connect(self: *Oven, port: Connection.SerialPortDescription) !void {
@@ -63,38 +65,47 @@ pub fn send(self: Oven, data: anytype) !void {
 }
 
 pub fn startMonitor(self: *Oven, curve_index: u8) !void {
+    log.debug("Starting monitor", .{});
     var con = self.connection orelse return Connection.Error.NoConnection;
-
     try con.send(Commands.Start);
     try con.send(curve_index);
 
     const Monitor = struct {
         const Self = @This();
 
-        const State = enum { time0, temp0, time1, temp1 };
+        const HEADER: u16 = 0xAAAA;
+        const ENDING: u16 = 0xABAB;
+
+        const State = enum { header, time, temp0, temp1 };
 
         actual: *TemperatureCurve,
         expected: *TemperatureCurve,
-        state: State = .time0,
+        state: State = .header,
         time: u16 = 0,
 
         pub fn put(s: *Self, data: u16) !Connection.ReceiverAction {
+            log.debug("got {}, {}", .{ data, s.state });
+            if (data == Self.ENDING) {
+                return .Stop;
+            }
+
             switch (s.state) {
-                .time0 => {
+                .header => {
+                    if (data == Self.HEADER) {
+                        s.state = .time;
+                    }
+                },
+                .time => {
                     s.time = data;
                     s.state = .temp0;
                 },
                 .temp0 => {
                     try s.actual.addPoint(s.time, data);
-                    s.state = .time1;
-                },
-                .time1 => {
-                    s.time = data;
                     s.state = .temp1;
                 },
                 .temp1 => {
                     try s.expected.addPoint(s.time, data);
-                    s.state = .time0;
+                    s.state = .header;
                 },
             }
 
@@ -108,24 +119,24 @@ pub fn startMonitor(self: *Oven, curve_index: u8) !void {
 }
 
 pub fn stopMonitor(self: *Oven) !void {
+    log.debug("stoping monitor", .{});
     self.curve.reset();
     self.expected_curve.reset();
 
     if (self.connection) |*con| {
-        con.stopReceive();
         try con.send(Commands.Stop);
     }
 }
 
 pub fn getPID(self: *Oven) !void {
+    log.debug("getting PID", .{});
     var con = self.connection orelse return Connection.Error.NoConnection;
-
     try con.send(Commands.PIDGet);
 
     const Getter = struct {
         const Self = @This();
 
-        const State = enum { P, I, D, DONE };
+        const State = enum { P, I, D };
 
         pid: *PID,
         state: State = .P,
@@ -143,9 +154,6 @@ pub fn getPID(self: *Oven) !void {
                 },
                 .D => {
                     g.pid.d = data;
-                    g.state = .DONE;
-                },
-                .DONE => {
                     return .Stop;
                 },
             }
@@ -159,21 +167,73 @@ pub fn getPID(self: *Oven) !void {
 }
 
 pub fn sendPID(self: Oven) !void {
+    log.debug("sending PID", .{});
     const con = self.connection orelse return Connection.Error.NoConnection;
 
     try con.send(Commands.PIDSet);
 
-    const buf = [_]u32{ self.pid.p, self.pid.i, self.pid.d };
-    try con.send(buf);
+    try con.send(self.pid.p);
+    try con.send(self.pid.i);
+    try con.send(self.pid.d);
+}
+
+pub fn getCurve(self: *Oven, curve_index: u8) !void {
+    log.debug("getting curve {}", .{curve_index});
+    var con = self.connection orelse return Connection.Error.NoConnection;
+    try con.send(Commands.CurveGet);
+    try con.send(curve_index);
+
+    const CurveGetter = struct {
+        const Self = @This();
+
+        const HEADER: u16 = 0xAAAA;
+        const ENDING: u16 = 0xABAB;
+
+        const State = enum { header, time, temp };
+
+        curve: *TemperatureCurve,
+        state: State = .header,
+        time: u16 = 0,
+
+        pub fn put(s: *Self, data: u16) !Connection.ReceiverAction {
+            log.debug("got {}, {}", .{ data, s.state });
+            if (data == Self.ENDING) {
+                return .Stop;
+            }
+
+            switch (s.state) {
+                .header => {
+                    if (data == Self.HEADER) {
+                        s.state = .time;
+                    }
+                },
+                .time => {
+                    s.time = data;
+                    s.state = .temp0;
+                },
+                .temp => {
+                    try s.curve.addPoint(s.time, data);
+                    s.state = .header;
+                },
+            }
+
+            return .Continue;
+        }
+    };
+
+    const getter: CurveGetter = .{ .curve = &self.curve };
+
+    try con.startReceive(u16, getter);
 }
 
 pub fn sendCurve(self: Oven, curve_index: u8) !void {
+    log.debug("sending curve {}", .{curve_index});
     const con = self.connection orelse return Connection.Error.NoConnection;
 
     var points: [CurvePoints]u16 = undefined;
     try self.curve.getSamples(&points);
 
-    try con.send(Commands.Curve);
+    try con.send(Commands.CurveSet);
     try con.send(curve_index);
     try con.send(points);
 }

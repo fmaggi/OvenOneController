@@ -15,7 +15,6 @@ pub const Error = error{
 pub const Connection = @This();
 port_name: [std.fs.MAX_PATH_BYTES]u8 = undefined,
 fd: std.fs.File,
-ctx: Context,
 
 pub const list = serial.list;
 
@@ -25,10 +24,10 @@ pub fn open(port: SerialPortDescription) !Connection {
     const fd = try std.fs.cwd().openFile(port.file_name, .{ .mode = .read_write });
     errdefer fd.close();
 
-    var s: Connection = .{ .fd = fd, .ctx = .{} };
+    var s: Connection = .{ .fd = fd };
 
     @memset(s.port_name[0..], 0);
-    @memcpy(s.port_name[0..port.display_name.len], port.display_name);
+    @memcpy(s.port_name[0..port.display_name.len], port.file_name);
 
     try serial.configureSerialPort(fd, serial.SerialConfig{
         .baud_rate = 9600,
@@ -42,26 +41,36 @@ pub fn open(port: SerialPortDescription) !Connection {
 }
 
 pub fn close(self: *Connection) void {
-    self.ctx.active = false;
-    while (self.ctx.running) {}
+    log.debug("Closing connection", .{});
     self.fd.close();
     self.* = undefined;
 }
 
 pub fn send(self: Connection, data: anytype) !void {
     const T = @TypeOf(data);
-    log.debug("Sending {any} {any}", .{ @typeName(T), data });
 
     switch (@typeInfo(T)) {
-        .Pointer => |p| return if (p.size == .Slice) self.sendSlice(p.child, data) else @compileError("Invalid type " ++ @typeName(T)),
-        .Array => |a| return self.sendSlice(a.child, &data),
-        .Int => return self.sendSingle(T, data),
-        .ComptimeInt => return self.sendSingle(isize, @as(isize, data)),
+        .Pointer => |p| {
+            log.debug("Sending pointer type", .{});
+            return if (p.size == .Slice)
+                self.sendSlice(p.child, data)
+            else
+                @compileError("Invalid type " ++ @typeName(T));
+        },
+        .Array => |a| {
+            log.debug("Sending slice type", .{});
+            return self.sendSlice(a.child, &data);
+        },
+        .Int => {
+            log.debug("Sending int type", .{});
+            return self.sendSingle(T, data);
+        },
         else => @compileError("Invalid type " ++ @typeName(T)),
     }
 }
 
 fn sendSlice(self: Connection, comptime T: type, data: []const T) !void {
+    log.debug("[slice] {any}", .{data});
     for (data) |elem| {
         try sendSingle(self, T, elem);
     }
@@ -69,6 +78,7 @@ fn sendSlice(self: Connection, comptime T: type, data: []const T) !void {
 
 fn sendSingle(self: Connection, comptime T: type, data: T) !void {
     const size = @sizeOf(T);
+    log.debug("[single] {any} {} {}", .{ @typeName(T), data, size });
 
     switch (size) {
         0 => return,
@@ -88,36 +98,17 @@ fn sendSingle(self: Connection, comptime T: type, data: T) !void {
 
 pub fn startReceive(self: *Connection, comptime D: type, sink: anytype) !void {
     log.debug("Starting reception", .{});
-
-    self.ctx.active = false;
-    while (self.ctx.running) {}
-
-    self.ctx.active = true;
-
-    const t = try std.Thread.spawn(.{}, Receiver(D).receive, .{ self.fd, &self.ctx, sink });
+    const t = try std.Thread.spawn(.{}, Receiver(D).receive, .{ self.fd, sink });
     t.detach();
 }
-
-pub fn stopReceive(self: *Connection) void {
-    log.debug("Stoping reception", .{});
-    self.ctx.active = false;
-}
-
-const Context = struct {
-    active: bool = false,
-    running: bool = false,
-};
 
 pub const ReceiverAction = enum { Continue, Stop };
 
 fn Receiver(comptime D: type) type {
     return struct {
-        pub fn receive(fd: std.fs.File, ctx: *Context, sink: anytype) void {
-            log.debug("Entering receiver thread {}", .{ctx.active});
-
-            ctx.running = true;
-            defer ctx.running = false;
-
+        pub fn receive(fd: std.fs.File, sink: anytype) void {
+            log.debug("Entering receiving thread", .{});
+            defer log.debug("Leaving receiving thread", .{});
             const size = @sizeOf(D);
 
             var buf: [size]u8 = undefined;
@@ -125,7 +116,7 @@ fn Receiver(comptime D: type) type {
 
             var s = sink;
 
-            while (ctx.active) {
+            while (true) {
                 const b = fd.reader().readByte() catch |e| {
                     log.err("Error at receiver thread {any}", .{e});
                     continue;
@@ -148,8 +139,6 @@ fn Receiver(comptime D: type) type {
                     i = 0;
                 }
             }
-
-            log.debug("Leaving receiver thread", .{});
         }
     };
 }
