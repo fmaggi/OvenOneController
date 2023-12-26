@@ -55,8 +55,8 @@ pub fn disconnect(self: *Oven) void {
     }
 
     self.connection = null;
-    self.curve.reset();
-    self.expected_curve.reset();
+    self.curve.clear();
+    self.expected_curve.clear();
 }
 
 pub fn send(self: Oven, data: anytype) !void {
@@ -66,7 +66,7 @@ pub fn send(self: Oven, data: anytype) !void {
 
 pub fn startMonitor(self: *Oven, curve_index: u8) !void {
     log.debug("Starting monitor", .{});
-    var con = self.connection orelse return Connection.Error.NoConnection;
+    const con = self.connection orelse return Connection.Error.NoConnection;
     try con.send(Commands.Start);
     try con.send(curve_index);
 
@@ -114,18 +114,19 @@ pub fn startMonitor(self: *Oven, curve_index: u8) !void {
     };
 
     const mon: Monitor = .{ .actual = &self.curve, .expected = &self.expected_curve };
-
     try con.startReceive(u16, mon);
 }
 
-pub fn stopMonitor(self: *Oven) !void {
+pub fn stopMonitor(self: Oven) !void {
     log.debug("stoping monitor", .{});
-    self.curve.reset();
-    self.expected_curve.reset();
-
-    if (self.connection) |*con| {
+    if (self.connection) |con| {
         try con.send(Commands.Stop);
     }
+}
+
+pub fn clearCurves(self: *Oven) void {
+    self.curve.clear();
+    self.expected_curve.clear();
 }
 
 pub fn getPID(self: *Oven) !void {
@@ -209,7 +210,7 @@ pub fn getCurve(self: *Oven, curve_index: u8) !void {
                 },
                 .time => {
                     s.time = data;
-                    s.state = .temp0;
+                    s.state = .temp;
                 },
                 .temp => {
                     try s.curve.addPoint(s.time, data);

@@ -50,21 +50,12 @@ pub fn send(self: Connection, data: anytype) !void {
     const T = @TypeOf(data);
 
     switch (@typeInfo(T)) {
-        .Pointer => |p| {
-            log.debug("Sending pointer type", .{});
-            return if (p.size == .Slice)
-                self.sendSlice(p.child, data)
-            else
-                @compileError("Invalid type " ++ @typeName(T));
-        },
-        .Array => |a| {
-            log.debug("Sending slice type", .{});
-            return self.sendSlice(a.child, &data);
-        },
-        .Int => {
-            log.debug("Sending int type", .{});
-            return self.sendSingle(T, data);
-        },
+        .Pointer => |p| return if (p.size == .Slice)
+            self.sendSlice(p.child, data)
+        else
+            @compileError("Invalid type " ++ @typeName(T)),
+        .Array => |a| return self.sendSlice(a.child, &data),
+        .Int => return self.sendSingle(T, data),
         else => @compileError("Invalid type " ++ @typeName(T)),
     }
 }
@@ -77,9 +68,8 @@ fn sendSlice(self: Connection, comptime T: type, data: []const T) !void {
 }
 
 fn sendSingle(self: Connection, comptime T: type, data: T) !void {
+    log.debug("[single] {any} {}", .{ @typeName(T), data });
     const size = @sizeOf(T);
-    log.debug("[single] {any} {} {}", .{ @typeName(T), data, size });
-
     switch (size) {
         0 => return,
         1 => try self.fd.writer().writeByte(@bitCast(data)),
@@ -96,49 +86,43 @@ fn sendSingle(self: Connection, comptime T: type, data: T) !void {
     }
 }
 
-pub fn startReceive(self: *Connection, comptime D: type, sink: anytype) !void {
+pub fn startReceive(self: Connection, comptime D: type, sink: anytype) !void {
     log.debug("Starting reception", .{});
-    const t = try std.Thread.spawn(.{}, Receiver(D).receive, .{ self.fd, sink });
+    const t = try std.Thread.spawn(.{}, receive, .{ D, self.fd, sink });
     t.detach();
 }
 
 pub const ReceiverAction = enum { Continue, Stop };
 
-fn Receiver(comptime D: type) type {
-    return struct {
-        pub fn receive(fd: std.fs.File, sink: anytype) void {
-            log.debug("Entering receiving thread", .{});
-            defer log.debug("Leaving receiving thread", .{});
-            const size = @sizeOf(D);
+fn receive(comptime D: type, fd: std.fs.File, sink: anytype) void {
+    log.debug("Entering receiving thread", .{});
+    defer log.debug("Leaving receiving thread", .{});
+    const size = @sizeOf(D);
 
-            var buf: [size]u8 = undefined;
-            var i: usize = 0;
+    var buf: [size]u8 = undefined;
+    var i: usize = 0;
 
-            var s = sink;
+    var s = sink;
+    var action: ReceiverAction = .Continue;
 
-            while (true) {
-                const b = fd.reader().readByte() catch |e| {
-                    log.err("Error at receiver thread {any}", .{e});
-                    continue;
-                };
-                const j = switch (native_endian) {
-                    .Little => i,
-                    .Big => size - i - 1,
-                };
-                buf[j] = b;
+    while (action == .Continue) {
+        const b = fd.reader().readByte() catch |e| {
+            log.err("Error at receiver thread {any}", .{e});
+            continue;
+        };
+        const j = switch (native_endian) {
+            .Little => i,
+            .Big => size - i - 1,
+        };
+        buf[j] = b;
 
-                i += 1;
-                if (i == size) {
-                    const action = s.put(@bitCast(buf)) catch |e| {
-                        log.err("Error at receiver thread {any}", .{e});
-                        continue;
-                    };
-                    if (action == .Stop) {
-                        return;
-                    }
-                    i = 0;
-                }
-            }
+        i += 1;
+        if (i == size) {
+            action = s.put(@bitCast(buf)) catch |e| {
+                log.err("Error at receiver thread {any}", .{e});
+                continue;
+            };
+            i = 0;
         }
-    };
+    }
 }

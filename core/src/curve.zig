@@ -24,7 +24,7 @@ pub fn deinit(self: TemperatureCurve) void {
     self.temperature.deinit();
 }
 
-pub fn reset(self: *TemperatureCurve) void {
+pub fn clear(self: *TemperatureCurve) void {
     self.time.clearRetainingCapacity();
     self.temperature.clearRetainingCapacity();
 }

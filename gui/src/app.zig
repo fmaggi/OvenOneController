@@ -1,6 +1,8 @@
 const std = @import("std");
 const math = std.math;
 
+const log = std.log.scoped(.App);
+
 const zglfw = @import("zglfw");
 const zgpu = @import("zgpu");
 const zgui = @import("zgui");
@@ -11,7 +13,7 @@ const widgets = @import("widgets.zig");
 
 const roboto_font = @embedFile("Roboto-Medium.ttf");
 
-const ActiveLayer = enum { curve_maker, monitor, pid_editor, testing };
+const ActiveLayer = enum { curve_maker, monitor, pid_editor };
 
 const App = @This();
 allocator: std.mem.Allocator,
@@ -25,7 +27,7 @@ oven: Oven,
 
 pub fn init(allocator: std.mem.Allocator) !App {
     zglfw.init() catch |e| {
-        std.log.err("Failed to initialize GLFW library.", .{});
+        log.err("Failed to initialize GLFW library.", .{});
         return e;
     };
     errdefer zglfw.terminate();
@@ -38,7 +40,7 @@ pub fn init(allocator: std.mem.Allocator) !App {
     }
 
     const window = zglfw.Window.create(1600, 1000, "Test", null) catch |e| {
-        std.log.err("Failed to create demo window.", .{});
+        log.err("Failed to create demo window.", .{});
         return e;
     };
     errdefer window.destroy();
@@ -153,7 +155,6 @@ fn mainWindow(self: *App) !void {
     _ = zgui.begin("Oven One Controller", .{ .popen = &self.is_open, .flags = windowFlags });
     defer zgui.end();
     const S = struct {
-        var config_open: bool = false;
         var show_demo: bool = false;
     };
 
@@ -197,46 +198,21 @@ fn mainWindow(self: *App) !void {
 
         if (zgui.beginMenu("Herramientas", true)) {
             if (zgui.menuItem("Crear curva", .{})) {
-                if (self.active == .monitor) {
-                    try self.oven.stopMonitor();
-                }
-                self.active = .curve_maker;
+                try self.changeState(.curve_maker);
             }
 
             if (zgui.menuItem("Monitor", .{})) {
-                if (self.active == .curve_maker) {
-                    self.oven.curve.reset();
-                }
-                self.active = .monitor;
+                try self.changeState(.monitor);
             }
 
             if (zgui.menuItem("Editor PID", .{})) {
-                self.oven.getPID() catch {};
-                self.active = .pid_editor;
-                if (self.active == .curve_maker) {
-                    self.oven.curve.reset();
-                } else if (self.active == .monitor) {
-                    try self.oven.stopMonitor();
-                }
-            }
-
-            if (zgui.menuItem("Testing", .{})) {
-                if (self.active == .curve_maker) {
-                    self.oven.curve.reset();
-                } else if (self.active == .monitor) {
-                    try self.oven.stopMonitor();
-                }
-                self.active = .testing;
+                try self.changeState(.pid_editor);
             }
 
             zgui.endMenu();
         }
 
         if (zgui.beginMenu("Configuracion", true)) {
-            if (zgui.menuItem("Editar", .{})) {
-                S.config_open = true;
-            }
-
             if (zgui.menuItem("Mostrar demo", .{})) {
                 S.show_demo = true;
             }
@@ -247,40 +223,10 @@ fn mainWindow(self: *App) !void {
     }
 
     const avail = zgui.getContentRegionAvail();
-    if (self.active == .curve_maker) {
-        if (try curveMaker(&self.oven.curve, avail[0], avail[1])) |index| {
-            try self.oven.sendCurve(index);
-            zgui.openPopup("SuccessPopup", .{});
-        }
-    } else if (self.active == .monitor) {
-        if (monitor(&self.oven.curve, &self.oven.expected_curve, avail[0], avail[1])) |index| {
-            try self.oven.startMonitor(index);
-        }
-    } else if (self.active == .pid_editor) {
-        if (pidEditor(&self.oven.pid, avail[0], avail[1])) {
-            try self.oven.sendPID();
-        }
-    } else if (self.active == .testing) {
-        const Testing = struct {
-            var char: u8 = 0;
-            var hw: u16 = 0;
-            var w: u32 = 0;
-        };
-        if (testing(&Testing.char, &Testing.hw, &Testing.w)) |index| {
-            switch (index) {
-                0 => try self.oven.send(Testing.char),
-                1 => try self.oven.send(Testing.hw),
-                2 => try self.oven.send(Testing.w),
-                else => {},
-            }
-        }
-    }
-
-    if (S.config_open) {
-        zgui.setNextWindowPos(.{ .x = pos[0] + 300, .y = pos[1] + 20, .cond = .first_use_ever });
-        zgui.setNextWindowSize(.{ .w = 550, .h = 680, .cond = .first_use_ever });
-        if (zgui.begin("Configuracion", .{ .popen = &S.config_open, .flags = .{} })) {}
-        zgui.end();
+    switch (self.active) {
+        .curve_maker => try self.curveMaker(avail[0], avail[1]),
+        .monitor => try self.monitor(avail[0], avail[1]),
+        .pid_editor => try self.pidEditor(avail[0], avail[1]),
     }
 
     if (S.show_demo) {
@@ -313,6 +259,21 @@ pub fn draw(self: App) void {
     _ = gctx.present();
 }
 
+fn changeState(self: *App, to: ActiveLayer) !void {
+    log.debug("changing state", .{});
+    if (to == self.active) return;
+
+    self.oven.clearCurves();
+
+    switch (self.active) {
+        .curve_maker => {},
+        .monitor => try self.oven.stopMonitor(),
+        .pid_editor => self.oven.getPID() catch {},
+    }
+
+    self.active = to;
+}
+
 fn setStyle() void {
     var style = zgui.getStyle();
     style.window_padding = [2]f32{ 10, 10 };
@@ -324,30 +285,34 @@ fn setStyle() void {
     style.grab_rounding = 3;
 }
 
-fn curveMaker(curve: *Oven.TemperatureCurve, w: f32, h: f32) !?u8 {
+fn curveMaker(self: *App, w: f32, h: f32) !void {
     const plotSize = 0.8;
-    var p = false;
-    var index: usize = 0;
 
     {
-        var to_delete: ?usize = null;
         _ = zgui.beginChild("table", .{ .w = w * (1 - plotSize), .h = h });
         defer zgui.endChild();
 
-        try tablePoints(curve, &to_delete);
+        const to_delete = try tablePoints(&self.oven.curve);
 
         if (to_delete) |i| {
-            curve.removePoint(i);
+            self.oven.curve.removePoint(i);
         }
 
         zgui.setCursorPosY(h * 0.7);
 
         zgui.separatorText("Programacion");
 
-        index = curveSelector();
+        const index: u8 = @truncate(curveSelector());
 
         if (zgui.button("Programar", .{})) {
-            p = true;
+            try self.oven.sendCurve(index);
+            zgui.openPopup("SuccessPopup", .{});
+        }
+
+        zgui.sameLine(.{});
+
+        if (zgui.button("Leer", .{})) {
+            try self.oven.getCurve(index);
         }
     }
 
@@ -360,31 +325,33 @@ fn curveMaker(curve: *Oven.TemperatureCurve, w: f32, h: f32) !?u8 {
         plotSetup("Crear Curva", h, false);
         defer plotDone();
 
-        plotEditable("curva", curve);
+        plotEditable("curva", &self.oven.curve);
     }
-
-    const i: u8 = @truncate(index);
-    return if (p) i else null;
 }
 
-fn monitor(actual: *const Oven.TemperatureCurve, expected: *const Oven.TemperatureCurve, w: f32, h: f32) ?u8 {
-    actual.ensureSameSize();
-    expected.ensureSameSize();
+fn monitor(self: *App, w: f32, h: f32) !void {
+    self.oven.curve.ensureSameSize();
+    self.oven.expected_curve.ensureSameSize();
 
     const style = zgui.getStyle();
     const selectorSize = zgui.calcTextSize("AA", .{})[1] + style.frame_padding[1] * 3;
-    var p = false;
-    var index: usize = 0;
 
     {
         _ = zgui.beginChild("curveSelector", .{ .w = w * 0.2, .h = selectorSize });
-        defer zgui.endChild();
-
-        index = curveSelector();
+        const index: u8 = @truncate(curveSelector());
+        zgui.endChild();
 
         zgui.sameLine(.{});
 
-        p = zgui.button("Empezar", .{});
+        if (zgui.button("Empezar", .{})) {
+            try self.oven.startMonitor(index);
+        }
+
+        zgui.sameLine(.{});
+
+        if (zgui.button("Limpiar", .{})) {
+            self.oven.clearCurves();
+        }
     }
 
     {
@@ -395,51 +362,27 @@ fn monitor(actual: *const Oven.TemperatureCurve, expected: *const Oven.Temperatu
         plotSetup("Monitor", ph, true);
         defer plotDone();
 
-        plot("Target", expected);
-        plot("Temperatura", actual);
+        plot("Target", &self.oven.expected_curve);
+        plot("Temperatura", &self.oven.curve);
     }
-
-    const i: u8 = @truncate(index);
-    return if (p) i else null;
 }
 
-fn pidEditor(pid: *Oven.PID, w: f32, h: f32) bool {
+fn pidEditor(self: *App, w: f32, h: f32) !void {
     _ = w;
     _ = h;
-    _ = zgui.inputScalar("P", u32, .{ .v = &pid.p });
-    _ = zgui.inputScalar("I", u32, .{ .v = &pid.i });
-    _ = zgui.inputScalar("D", u32, .{ .v = &pid.d });
+    _ = zgui.inputScalar("P", u32, .{ .v = &self.oven.pid.p });
+    _ = zgui.inputScalar("I", u32, .{ .v = &self.oven.pid.i });
+    _ = zgui.inputScalar("D", u32, .{ .v = &self.oven.pid.d });
 
-    return zgui.button("Programar", .{});
-}
-
-fn testing(char: *u8, hw: *u16, w: *u32) ?u8 {
-    var send: ?u8 = null;
-
-    _ = zgui.inputScalar("u8     ", u8, .{ .v = char });
-    zgui.sameLine(.{});
-    if (zgui.button("Enviar##u8", .{})) {
-        send = 0;
+    if (zgui.button("Programar", .{})) {
+        try self.oven.sendPID();
     }
-
-    _ = zgui.inputScalar("u16   ", u16, .{ .v = hw });
-    zgui.sameLine(.{});
-    if (zgui.button("Enviar##u16", .{})) {
-        send = 1;
-    }
-
-    _ = zgui.inputScalar("u32   ", u32, .{ .v = w });
-    zgui.sameLine(.{});
-    if (zgui.button("Enviar##u32", .{})) {
-        send = 2;
-    }
-
-    return send;
 }
 
 const headers = .{ "Tiempo [s]", "Temperatura [°C]", "Opciones" };
 
-fn tablePoints(curve: *Oven.TemperatureCurve, to_delete: *?usize) !void {
+fn tablePoints(curve: *Oven.TemperatureCurve) !?usize {
+    var to_delete: ?usize = null;
     {
         _ = zgui.beginTable("puntos", .{ .column = headers.len });
         defer zgui.endTable();
@@ -472,7 +415,7 @@ fn tablePoints(curve: *Oven.TemperatureCurve, to_delete: *?usize) !void {
             _ = zgui.tableNextColumn();
             _ = try std.fmt.bufPrint(&buf, "Eliminar##{}", .{index});
             if (zgui.button(&buf, .{})) {
-                to_delete.* = index;
+                to_delete = index;
             }
         }
     }
@@ -489,6 +432,8 @@ fn tablePoints(curve: *Oven.TemperatureCurve, to_delete: *?usize) !void {
     if (zgui.button(buttons[0], .{})) {
         try curve.addPoint(0, 0);
     }
+
+    return to_delete;
 }
 
 fn plotSetup(label: [:0]const u8, h: f32, legend: bool) void {
