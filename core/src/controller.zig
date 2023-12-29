@@ -1,17 +1,78 @@
 const std = @import("std");
-const native_endian = @import("builtin").target.cpu.arch.endian();
+const mode = @import("builtin").mode;
 
-pub const Connection = @import("connection.zig");
-pub const TemperatureCurve = @import("curve.zig");
+pub const Error = error{
+    NoConnection,
+};
 
 const CurvePoints = 500;
 
 const log = std.log.scoped(.Controller);
 
 pub const PID = struct {
+    const SHIFT = 16;
+    const SCALE = 1 << SHIFT;
+    const MASK = SCALE - 1;
+
     p: u32 = 0,
     i: u32 = 0,
     d: u32 = 0,
+
+    pub fn fromFloat(values: [3]f32) PID {
+        return .{
+            .p = @intFromFloat(values[0] * PID.SCALE),
+            .i = @intFromFloat(values[1] * PID.SCALE),
+            .d = @intFromFloat(values[2] * PID.SCALE),
+        };
+    }
+
+    pub fn toFloat(pid: PID) [3]f32 {
+        var buf: [3]f32 = undefined;
+
+        buf[0] = @floatFromInt(pid.p);
+        buf[1] = @floatFromInt(pid.i);
+        buf[2] = @floatFromInt(pid.d);
+
+        buf[0] /= PID.SCALE;
+        buf[1] /= PID.SCALE;
+        buf[2] /= PID.SCALE;
+
+        return buf;
+    }
+
+    pub fn format(pid: PID, writer: anytype, precision: u32) !void {
+        const pd = PID.decimal(pid.p);
+        const pf = PID.frac(pid.p, precision);
+        const id = PID.decimal(pid.i);
+        const ifr = PID.frac(pid.i, precision);
+        const dd = PID.decimal(pid.d);
+        const df = PID.frac(pid.d, precision);
+
+        const fts = pid.toFloat();
+
+        if (fts[1] < 0.1) {
+            try std.fmt.format(writer, "P={}.{}, I={}.0{}, D={}.{}\n", .{
+                pd, pf,
+                id, ifr,
+                dd, df,
+            });
+        } else {
+            try std.fmt.format(writer, "P={}.{}, I={}.{}, D={}.{}\n", .{
+                pd, pf,
+                id, ifr,
+                dd, df,
+            });
+        }
+    }
+
+    fn decimal(n: u32) u32 {
+        return n >> PID.SHIFT;
+    }
+
+    fn frac(n: u32, precision: u32) u32 {
+        const f = (n & PID.MASK) * precision;
+        return f >> PID.SHIFT;
+    }
 };
 
 pub const Commands = struct {
@@ -24,51 +85,46 @@ pub const Commands = struct {
     pub const Stop: u8 = 0xFE;
 };
 
-const Oven = @This();
-curve: TemperatureCurve,
-expected_curve: TemperatureCurve,
-pid: PID = .{},
-connection: ?Connection = null,
+pub const list = serial.list;
 
-pub fn init(allocator: std.mem.Allocator) Oven {
-    return .{
-        .curve = TemperatureCurve.init(allocator),
-        .expected_curve = TemperatureCurve.init(allocator),
-    };
+const Controller = @This();
+port_name: [std.fs.MAX_PATH_BYTES]u8 = undefined,
+fd: std.fs.File,
+
+pub fn connect(port: Controller.SerialPortDescription) !Controller {
+    log.debug("Opening connection {s}", .{port.display_name});
+
+    const fd = try std.fs.cwd().openFile(port.file_name, .{ .mode = .read_write });
+    errdefer fd.close();
+
+    var s: Controller = .{ .fd = fd };
+
+    @memset(s.port_name[0..], 0);
+    @memcpy(s.port_name[0..port.display_name.len], port.file_name);
+
+    try serial.configureSerialPort(fd, serial.SerialConfig{
+        .baud_rate = 9600,
+        .word_size = 8,
+        .parity = .none,
+        .stop_bits = .one,
+        .handshake = .none,
+    });
+
+    try s.send(Commands.Talk);
+
+    return s;
 }
 
-pub fn deinit(self: *Oven) void {
-    self.disconnect();
-    self.curve.deinit();
-    self.expected_curve.deinit();
+pub fn disconnect(self: *Controller) void {
+    log.debug("Closing connection", .{});
+    self.fd.close();
+    self.* = undefined;
 }
 
-pub fn connect(self: *Oven, port: Connection.SerialPortDescription) !void {
-    const con = try Connection.open(port);
-    try con.send(Commands.Talk);
-    self.connection = con;
-}
-
-pub fn disconnect(self: *Oven) void {
-    if (self.connection) |*con| {
-        con.close();
-    }
-
-    self.connection = null;
-    self.curve.clear();
-    self.expected_curve.clear();
-}
-
-pub fn send(self: Oven, data: anytype) !void {
-    const con = self.connection orelse return Connection.Error.NoConnection;
-    try con.send(data);
-}
-
-pub fn startMonitor(self: *Oven, curve_index: u8) !void {
+pub fn startMonitor(self: Controller, curve_index: u8, actual: *TemperatureCurve, expected: *TemperatureCurve) !void {
     log.debug("Starting monitor", .{});
-    const con = self.connection orelse return Connection.Error.NoConnection;
-    try con.send(Commands.Start);
-    try con.send(curve_index);
+    try self.send(Commands.Start);
+    try self.send(curve_index);
 
     const Monitor = struct {
         const Self = @This();
@@ -83,7 +139,7 @@ pub fn startMonitor(self: *Oven, curve_index: u8) !void {
         state: State = .header,
         time: u16 = 0,
 
-        pub fn put(s: *Self, data: u16) !Connection.ReceiverAction {
+        pub fn put(s: *Self, data: u16) !Controller.ReceiverAction {
             log.debug("got {}, {}", .{ data, s.state });
             if (data == Self.ENDING) {
                 return .Stop;
@@ -113,26 +169,18 @@ pub fn startMonitor(self: *Oven, curve_index: u8) !void {
         }
     };
 
-    const mon: Monitor = .{ .actual = &self.curve, .expected = &self.expected_curve };
-    try con.startReceive(u16, mon);
+    const mon: Monitor = .{ .actual = actual, .expected = expected };
+    try self.startReceive(u16, mon);
 }
 
-pub fn stopMonitor(self: Oven) !void {
+pub fn stopMonitor(self: Controller) !void {
     log.debug("stoping monitor", .{});
-    if (self.connection) |con| {
-        try con.send(Commands.Stop);
-    }
+    try self.send(Commands.Stop);
 }
 
-pub fn clearCurves(self: *Oven) void {
-    self.curve.clear();
-    self.expected_curve.clear();
-}
-
-pub fn getPID(self: *Oven) !void {
+pub fn getPID(self: Controller, pid: *PID) !void {
     log.debug("getting PID", .{});
-    var con = self.connection orelse return Connection.Error.NoConnection;
-    try con.send(Commands.PIDGet);
+    try self.send(Commands.PIDGet);
 
     const Getter = struct {
         const Self = @This();
@@ -142,7 +190,7 @@ pub fn getPID(self: *Oven) !void {
         pid: *PID,
         state: State = .P,
 
-        pub fn put(g: *Self, data: u32) !Connection.ReceiverAction {
+        pub fn put(g: *Self, data: u32) !Controller.ReceiverAction {
             log.debug("PID got {}", .{data});
             switch (g.state) {
                 .P => {
@@ -162,27 +210,29 @@ pub fn getPID(self: *Oven) !void {
         }
     };
 
-    const getter: Getter = .{ .pid = &self.pid };
+    const getter: Getter = .{ .pid = pid };
 
-    try con.startReceive(u32, getter);
+    try self.startReceive(u32, getter);
 }
 
-pub fn sendPID(self: Oven) !void {
-    log.debug("sending PID", .{});
-    const con = self.connection orelse return Connection.Error.NoConnection;
+pub fn sendPID(self: Controller, pid: PID) !void {
+    log.debug("Sending PID", .{});
+    if (comptime mode == .Debug) {
+        pid.format(std.io.getStdOut().writer(), 10000) catch {};
+        log.debug("Done", .{});
+    }
 
-    try con.send(Commands.PIDSet);
+    try self.send(Commands.PIDSet);
 
-    try con.send(self.pid.p);
-    try con.send(self.pid.i);
-    try con.send(self.pid.d);
+    try self.send(pid.p);
+    try self.send(pid.i);
+    try self.send(pid.d);
 }
 
-pub fn getCurve(self: *Oven, curve_index: u8) !void {
+pub fn getCurve(self: Controller, curve_index: u8, curve: *TemperatureCurve) !void {
     log.debug("getting curve {}", .{curve_index});
-    var con = self.connection orelse return Connection.Error.NoConnection;
-    try con.send(Commands.CurveGet);
-    try con.send(curve_index);
+    try self.send(Commands.CurveGet);
+    try self.send(curve_index);
 
     const CurveGetter = struct {
         const Self = @This();
@@ -196,7 +246,7 @@ pub fn getCurve(self: *Oven, curve_index: u8) !void {
         state: State = .header,
         time: u16 = 0,
 
-        pub fn put(s: *Self, data: u16) !Connection.ReceiverAction {
+        pub fn put(s: *Self, data: u16) !Controller.ReceiverAction {
             log.debug("got {}, {}", .{ data, s.state });
             if (data == Self.ENDING) {
                 return .Stop;
@@ -222,19 +272,107 @@ pub fn getCurve(self: *Oven, curve_index: u8) !void {
         }
     };
 
-    const getter: CurveGetter = .{ .curve = &self.curve };
+    const getter: CurveGetter = .{ .curve = curve };
 
-    try con.startReceive(u16, getter);
+    try self.startReceive(u16, getter);
 }
 
-pub fn sendCurve(self: Oven, curve_index: u8) !void {
+pub fn sendCurve(self: Controller, curve_index: u8, curve: *const TemperatureCurve) !void {
     log.debug("sending curve {}", .{curve_index});
-    const con = self.connection orelse return Connection.Error.NoConnection;
 
     var points: [CurvePoints]u16 = undefined;
-    try self.curve.getSamples(&points);
+    try curve.getSamples(&points);
 
-    try con.send(Commands.CurveSet);
-    try con.send(curve_index);
-    try con.send(points);
+    try self.send(Commands.CurveSet);
+    try self.send(curve_index);
+    try self.send(points);
 }
+
+pub fn send(self: Controller, data: anytype) !void {
+    const T = @TypeOf(data);
+
+    switch (@typeInfo(T)) {
+        .Pointer => |p| return if (p.size == .Slice)
+            try self.sendSlice(p.child, data)
+        else
+            @compileError("Invalid type " ++ @typeName(T)),
+        .Array => |a| return try self.sendSlice(a.child, &data),
+        .Int => return try self.sendSingle(T, data),
+        else => @compileError("Invalid type " ++ @typeName(T)),
+    }
+}
+
+fn sendSlice(self: Controller, comptime T: type, data: []const T) !void {
+    log.debug("[slice] {any}", .{data});
+    for (data) |elem| {
+        try sendSingle(self, T, elem);
+    }
+}
+
+fn sendSingle(self: Controller, comptime T: type, data: T) !void {
+    log.debug("[single] {any} {}", .{ @typeName(T), data });
+    const size = @sizeOf(T);
+    switch (size) {
+        0 => return,
+        1 => try self.fd.writer().writeByte(@bitCast(data)),
+        else => {
+            const bytes: [size]u8 = @bitCast(data);
+            inline for (0..size) |i| {
+                const j = comptime switch (native_endian) {
+                    .Little => i,
+                    .Big => size - i - 1,
+                };
+                try self.fd.writer().writeByte(bytes[j]);
+            }
+        },
+    }
+}
+
+pub fn startReceive(self: Controller, comptime D: type, sink: anytype) !void {
+    log.debug("Starting reception", .{});
+    const t = try std.Thread.spawn(.{}, receive, .{ D, self.fd, sink });
+    t.detach();
+}
+
+const ReceiverAction = enum { Continue, Stop };
+
+fn receive(comptime D: type, fd: std.fs.File, sink: anytype) void {
+    log.debug("Entering receiving thread", .{});
+    defer log.debug("Leaving receiving thread", .{});
+    const size = @sizeOf(D);
+
+    var buf: [size]u8 = undefined;
+    var i: usize = 0;
+
+    var s = sink;
+    var action: ReceiverAction = .Continue;
+
+    while (action == .Continue) {
+        const b = fd.reader().readByte() catch |e| {
+            log.err("Error at receiver thread {any}", .{e});
+            continue;
+        };
+        const j = switch (native_endian) {
+            .Little => i,
+            .Big => size - i - 1,
+        };
+        buf[j] = b;
+
+        i += 1;
+        if (i == size) {
+            action = s.put(@bitCast(buf)) catch |e| {
+                log.err("Error at receiver thread {any}", .{e});
+                continue;
+            };
+            i = 0;
+        }
+    }
+}
+
+pub const TemperatureCurve = @import("curve.zig");
+
+const native_endian = @import("builtin").target.cpu.arch.endian();
+
+const serial = @import("serial.zig");
+pub const SerialPortDescription = serial.SerialPortDescription;
+pub const PortIterator = serial.PortIterator;

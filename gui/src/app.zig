@@ -3,135 +3,79 @@ const math = std.math;
 
 const log = std.log.scoped(.App);
 
-const zglfw = @import("zglfw");
-const zgpu = @import("zgpu");
-const zgui = @import("zgui");
-
 const Oven = @import("OvenController");
 
 const widgets = @import("widgets.zig");
 
-const roboto_font = @embedFile("Roboto-Medium.ttf");
-
 const ActiveLayer = enum { curve_maker, monitor, pid_editor };
 
+const Error = error{Exit};
+
 const App = @This();
-allocator: std.mem.Allocator,
-gctx: *zgpu.GraphicsContext,
-window: *zglfw.Window,
-draw_list: zgui.DrawList,
-font: zgui.Font,
+graphics: Graphics,
 active: ActiveLayer = .curve_maker,
+curve0: Oven.TemperatureCurve,
+curve1: Oven.TemperatureCurve,
+pid: Oven.PID = .{},
 is_open: bool = true,
-oven: Oven,
+oven: ?Oven = null,
 
 pub fn init(allocator: std.mem.Allocator) !App {
-    zglfw.init() catch |e| {
-        log.err("Failed to initialize GLFW library.", .{});
-        return e;
-    };
-    errdefer zglfw.terminate();
-
-    // Change current working directory to where the executable is located.
-    {
-        var buffer: [1024]u8 = undefined;
-        const path = std.fs.selfExeDirPath(buffer[0..]) catch ".";
-        std.os.chdir(path) catch {};
-    }
-
-    const window = zglfw.Window.create(1600, 1000, "Test", null) catch |e| {
-        log.err("Failed to create demo window.", .{});
-        return e;
-    };
-    errdefer window.destroy();
-
-    window.setSizeLimits(400, 400, -1, -1);
-    const gctx = try zgpu.GraphicsContext.create(allocator, window, .{});
-    errdefer gctx.destroy(allocator);
-
-    zgui.init(allocator);
-    zgui.plot.init();
-    const scale_factor = scale_factor: {
-        const scale = window.getContentScale();
-        break :scale_factor @max(scale[0], scale[1]);
-    };
-
-    const font_size = 16.0 * scale_factor;
-    const font = zgui.io.addFontFromMemory(roboto_font, math.floor(font_size * 1.1));
-    std.debug.assert(zgui.io.getFont(0) == font);
-
-    // This needs to be called *after* adding your custom fonts.
-    zgui.backend.initWithConfig(
-        window,
-        gctx.device,
-        @intFromEnum(zgpu.GraphicsContext.swapchain_format),
-        .{ .texture_filter_mode = .linear, .pipeline_multisample_count = 1 },
-    );
-
-    zgui.io.setDefaultFont(font);
-
-    {
-        zgui.plot.getStyle().line_weight = 3.0;
-        const plot_style = zgui.plot.getStyle();
-        plot_style.marker = .circle;
-        plot_style.marker_size = 5.0;
-    }
-
-    const draw_list = zgui.createDrawList();
+    const graphics = try Graphics.create(allocator);
 
     setStyle();
 
     return .{
-        .allocator = allocator,
-        .gctx = gctx,
-        .window = window,
-        .draw_list = draw_list,
-        .font = font,
-        .oven = Oven.init(allocator),
+        .graphics = graphics,
+        .curve0 = Oven.TemperatureCurve.init(allocator),
+        .curve1 = Oven.TemperatureCurve.init(allocator),
     };
 }
 
 pub fn deinit(self: *App) void {
-    zgui.backend.deinit();
-    zgui.plot.deinit();
-    zgui.destroyDrawList(self.draw_list);
-    zgui.deinit();
-    self.gctx.destroy(self.allocator);
-    self.window.destroy();
-    zglfw.terminate();
-    self.oven.deinit();
+    self.graphics.destroy();
+    if (self.oven) |*oven| {
+        oven.disconnect();
+    }
+}
+
+fn onUnknownError() !void {
+    return Error.Exit;
 }
 
 pub fn run(self: *App) !void {
-    while (!self.window.shouldClose() and self.is_open) {
+    while (!self.graphics.shouldClose() and self.is_open) {
         zglfw.pollEvents();
         try self.update();
-        self.draw();
+        self.graphics.draw();
     }
 }
 
 pub fn update(self: *App) !void {
-    zgui.backend.newFrame(
-        self.gctx.swapchain_descriptor.width,
-        self.gctx.swapchain_descriptor.height,
-    );
+    self.graphics.newFrame();
 
-    widgets.modal("ZeroSizePopup", "La curva esta vacia!", .{});
-    widgets.modal("BadCurvePopup", "Curva invalida!", .{});
-    widgets.modal("GradTooHighPopup", "La pendiente de la curva es demasiado alta", .{});
-    widgets.modal("NoConnectionPopup", "Conexion inexistente", .{});
-    widgets.modal("SuccessPopup", "Un exito!", .{});
+    const S = struct {
+        var err: [:0]const u8 = undefined;
+    };
+
+    try widgets.modal("ZeroSizePopup", "La curva esta vacia!", .{}, .{});
+    try widgets.modal("BadCurvePopup", "Curva invalida!", .{}, .{});
+    try widgets.modal("GradTooHighPopup", "La pendiente de la curva es demasiado alta", .{}, .{});
+    try widgets.modal("NoConnectionPopup", "Conexion inexistente", .{}, .{});
+    try widgets.modal("SuccessPopup", "Un exito!", .{}, .{});
+    try widgets.modal("UnknownError", "Unknown Error: {s}", .{S.err}, .{ .on_close = onUnknownError });
 
     self.mainWindow() catch |e| {
-        std.debug.print("{any}\n", .{e});
         switch (e) {
             Oven.TemperatureCurve.Error.NotEnoughPoints => zgui.openPopup("ZeroSizePopup", .{}),
             Oven.TemperatureCurve.Error.BadCurve => zgui.openPopup("BadCurvePopup", .{}),
             Oven.TemperatureCurve.Error.GradientTooHigh => zgui.openPopup("GradTooHighPopup", .{}),
-            Oven.Connection.Error.NoConnection => zgui.openPopup("NoConnectionPopup", .{}),
-            else => return e,
+            Oven.Error.NoConnection => zgui.openPopup("NoConnectionPopup", .{}),
+            else => {
+                S.err = @errorName(e);
+                zgui.openPopup("UnknownError", .{});
+            },
         }
-        return;
     };
 }
 
@@ -159,8 +103,10 @@ fn mainWindow(self: *App) !void {
     };
 
     if (zgui.beginMenuBar()) {
-        if (self.oven.connection) |con| {
+        defer zgui.endMenuBar();
+        if (self.oven) |con| {
             if (zgui.beginMenu(@ptrCast(&con.port_name), true)) {
+                defer zgui.endMenu();
                 if (zgui.menuItem("Modo programacion", .{})) {
                     try con.send(Oven.Commands.Talk);
                 }
@@ -170,33 +116,36 @@ fn mainWindow(self: *App) !void {
                 }
 
                 if (zgui.menuItem("Desconectar", .{})) {
-                    self.oven.disconnect();
+                    if (self.oven) |*oven| {
+                        oven.disconnect();
+                    }
+                    self.oven = null;
                 }
-                zgui.endMenu();
             }
 
             zgui.text("Conectado", .{});
         } else {
             var buf: [50]u8 = undefined;
             var fba = std.heap.FixedBufferAllocator.init(&buf);
-            var it = try Oven.Connection.list();
+            var it = try Oven.list();
 
             if (zgui.beginMenu("Puerto", true)) {
+                defer zgui.endMenu();
                 while (try it.next()) |port| {
                     const pn = try fba.allocator().dupeZ(u8, port.display_name);
                     defer fba.reset();
 
                     if (zgui.menuItem(pn, .{})) {
-                        try self.oven.connect(port);
+                        self.oven = try Oven.connect(port);
                     }
                 }
-                zgui.endMenu();
             }
 
             zgui.text("Desconectado", .{});
         }
 
         if (zgui.beginMenu("Herramientas", true)) {
+            defer zgui.endMenu();
             if (zgui.menuItem("Crear curva", .{})) {
                 try self.changeState(.curve_maker);
             }
@@ -208,18 +157,14 @@ fn mainWindow(self: *App) !void {
             if (zgui.menuItem("Editor PID", .{})) {
                 try self.changeState(.pid_editor);
             }
-
-            zgui.endMenu();
         }
 
         if (zgui.beginMenu("Configuracion", true)) {
+            defer zgui.endMenu();
             if (zgui.menuItem("Mostrar demo", .{})) {
                 S.show_demo = true;
             }
-            zgui.endMenu();
         }
-
-        zgui.endMenuBar();
     }
 
     const avail = zgui.getContentRegionAvail();
@@ -234,41 +179,20 @@ fn mainWindow(self: *App) !void {
     }
 }
 
-pub fn draw(self: App) void {
-    const gctx = self.gctx;
-
-    const swapchain_texv = gctx.swapchain.getCurrentTextureView();
-    defer swapchain_texv.release();
-
-    const commands = commands: {
-        const encoder = gctx.device.createCommandEncoder(null);
-        defer encoder.release();
-
-        // Gui pass.
-        {
-            const pass = zgpu.beginRenderPassSimple(encoder, .load, swapchain_texv, null, null, null);
-            defer zgpu.endReleasePass(pass);
-            zgui.backend.draw(pass);
-        }
-
-        break :commands encoder.finish(null);
-    };
-    defer commands.release();
-
-    gctx.submit(&.{commands});
-    _ = gctx.present();
-}
-
 fn changeState(self: *App, to: ActiveLayer) !void {
     log.debug("changing state", .{});
     if (to == self.active) return;
 
-    self.oven.clearCurves();
+    if (self.active == .monitor) {
+        if (self.oven) |oven| {
+            try oven.stopMonitor();
+        }
+    }
 
-    switch (self.active) {
-        .curve_maker => {},
-        .monitor => try self.oven.stopMonitor(),
-        .pid_editor => self.oven.getPID() catch {},
+    if (to == .pid_editor) {
+        if (self.oven) |oven| {
+            oven.getPID(&self.pid) catch {};
+        }
     }
 
     self.active = to;
@@ -292,10 +216,10 @@ fn curveMaker(self: *App, w: f32, h: f32) !void {
         _ = zgui.beginChild("table", .{ .w = w * (1 - plotSize), .h = h });
         defer zgui.endChild();
 
-        const to_delete = try tablePoints(&self.oven.curve);
+        const to_delete = try tablePoints(&self.curve0);
 
         if (to_delete) |i| {
-            self.oven.curve.removePoint(i);
+            self.curve0.removePoint(i);
         }
 
         zgui.setCursorPosY(h * 0.7);
@@ -305,14 +229,16 @@ fn curveMaker(self: *App, w: f32, h: f32) !void {
         const index: u8 = @truncate(curveSelector());
 
         if (zgui.button("Programar", .{})) {
-            try self.oven.sendCurve(index);
+            const oven = self.oven orelse return Oven.Error.NoConnection;
+            try oven.sendCurve(index, &self.curve0);
             zgui.openPopup("SuccessPopup", .{});
         }
 
         zgui.sameLine(.{});
 
         if (zgui.button("Leer", .{})) {
-            try self.oven.getCurve(index);
+            const oven = self.oven orelse return Oven.Error.NoConnection;
+            try oven.getCurve(index, &self.curve0);
         }
     }
 
@@ -325,33 +251,33 @@ fn curveMaker(self: *App, w: f32, h: f32) !void {
         plotSetup("Crear Curva", h, false);
         defer plotDone();
 
-        plotEditable("curva", &self.oven.curve);
+        plotEditable("curva", &self.curve0);
     }
 }
 
 fn monitor(self: *App, w: f32, h: f32) !void {
-    self.oven.curve.ensureSameSize();
-    self.oven.expected_curve.ensureSameSize();
+    self.curve0.ensureSameSize();
+    self.curve1.ensureSameSize();
 
     const style = zgui.getStyle();
     const selectorSize = zgui.calcTextSize("AA", .{})[1] + style.frame_padding[1] * 3;
 
-    {
-        _ = zgui.beginChild("curveSelector", .{ .w = w * 0.2, .h = selectorSize });
-        const index: u8 = @truncate(curveSelector());
-        zgui.endChild();
+    _ = zgui.beginChild("curveSelector", .{ .w = w * 0.2, .h = selectorSize });
+    const index: u8 = @truncate(curveSelector());
+    zgui.endChild();
 
-        zgui.sameLine(.{});
+    zgui.sameLine(.{});
 
-        if (zgui.button("Empezar", .{})) {
-            try self.oven.startMonitor(index);
-        }
+    if (zgui.button("Empezar", .{})) {
+        const oven = self.oven orelse return Oven.Error.NoConnection;
+        try oven.startMonitor(index, &self.curve0, &self.curve1);
+    }
 
-        zgui.sameLine(.{});
+    zgui.sameLine(.{});
 
-        if (zgui.button("Limpiar", .{})) {
-            self.oven.clearCurves();
-        }
+    if (zgui.button("Limpiar", .{})) {
+        self.curve0.clear();
+        self.curve1.clear();
     }
 
     {
@@ -362,20 +288,26 @@ fn monitor(self: *App, w: f32, h: f32) !void {
         plotSetup("Monitor", ph, true);
         defer plotDone();
 
-        plot("Target", &self.oven.expected_curve);
-        plot("Temperatura", &self.oven.curve);
+        plot("Target", &self.curve1);
+        plot("Temperatura", &self.curve0);
     }
 }
 
 fn pidEditor(self: *App, w: f32, h: f32) !void {
     _ = w;
     _ = h;
-    _ = zgui.inputScalar("P", u32, .{ .v = &self.oven.pid.p });
-    _ = zgui.inputScalar("I", u32, .{ .v = &self.oven.pid.i });
-    _ = zgui.inputScalar("D", u32, .{ .v = &self.oven.pid.d });
+
+    const S = struct {
+        var pid: [3]f32 = [_]f32{ 0, 0, 0 };
+    };
+
+    S.pid = self.pid.toFloat();
+    _ = zgui.inputFloat3("PID", .{ .v = &S.pid });
+    self.pid = Oven.PID.fromFloat(S.pid);
 
     if (zgui.button("Programar", .{})) {
-        try self.oven.sendPID();
+        const oven = self.oven orelse return Oven.Error.NoConnection;
+        try oven.sendPID(self.pid);
     }
 }
 
@@ -500,3 +432,128 @@ fn curveSelector() usize {
 
     return S.current;
 }
+
+const zglfw = @import("zglfw");
+const zgpu = @import("zgpu");
+const zgui = @import("zgui");
+
+const roboto_font = @embedFile("Roboto-Medium.ttf");
+
+const Graphics = struct {
+    const Self = @This();
+
+    allocator: std.mem.Allocator,
+    gctx: *zgpu.GraphicsContext,
+    window: *zglfw.Window,
+    draw_list: zgui.DrawList,
+    font: zgui.Font,
+
+    fn create(allocator: std.mem.Allocator) !Self {
+        zglfw.init() catch |e| {
+            log.err("Failed to initialize GLFW library.", .{});
+            return e;
+        };
+        errdefer zglfw.terminate();
+
+        // Change current working directory to where the executable is located.
+        {
+            var buffer: [1024]u8 = undefined;
+            const path = std.fs.selfExeDirPath(buffer[0..]) catch ".";
+            std.os.chdir(path) catch {};
+        }
+
+        const window = zglfw.Window.create(1600, 1000, "Test", null) catch |e| {
+            log.err("Failed to create demo window.", .{});
+            return e;
+        };
+        errdefer window.destroy();
+
+        window.setSizeLimits(400, 400, -1, -1);
+        const gctx = try zgpu.GraphicsContext.create(allocator, window, .{});
+        errdefer gctx.destroy(allocator);
+
+        zgui.init(allocator);
+        zgui.plot.init();
+        const scale_factor = scale_factor: {
+            const scale = window.getContentScale();
+            break :scale_factor @max(scale[0], scale[1]);
+        };
+
+        const font_size = 16.0 * scale_factor;
+        const font = zgui.io.addFontFromMemory(roboto_font, math.floor(font_size * 1.1));
+        std.debug.assert(zgui.io.getFont(0) == font);
+
+        // This needs to be called *after* adding your custom fonts.
+        zgui.backend.initWithConfig(
+            window,
+            gctx.device,
+            @intFromEnum(zgpu.GraphicsContext.swapchain_format),
+            .{ .texture_filter_mode = .linear, .pipeline_multisample_count = 1 },
+        );
+
+        zgui.io.setDefaultFont(font);
+
+        {
+            zgui.plot.getStyle().line_weight = 3.0;
+            const plot_style = zgui.plot.getStyle();
+            plot_style.marker = .circle;
+            plot_style.marker_size = 5.0;
+        }
+
+        const draw_list = zgui.createDrawList();
+
+        return .{
+            .allocator = allocator,
+            .gctx = gctx,
+            .window = window,
+            .draw_list = draw_list,
+            .font = font,
+        };
+    }
+
+    fn destroy(self: *Self) void {
+        zgui.backend.deinit();
+        zgui.plot.deinit();
+        zgui.destroyDrawList(self.draw_list);
+        zgui.deinit();
+        self.gctx.destroy(self.allocator);
+        self.window.destroy();
+        zglfw.terminate();
+    }
+
+    fn shouldClose(self: Self) bool {
+        return self.window.shouldClose();
+    }
+
+    fn newFrame(self: Self) void {
+        zgui.backend.newFrame(
+            self.gctx.swapchain_descriptor.width,
+            self.gctx.swapchain_descriptor.height,
+        );
+    }
+
+    fn draw(self: Self) void {
+        const gctx = self.gctx;
+
+        const swapchain_texv = gctx.swapchain.getCurrentTextureView();
+        defer swapchain_texv.release();
+
+        const commands = commands: {
+            const encoder = gctx.device.createCommandEncoder(null);
+            defer encoder.release();
+
+            // Gui pass.
+            {
+                const pass = zgpu.beginRenderPassSimple(encoder, .load, swapchain_texv, null, null, null);
+                defer zgpu.endReleasePass(pass);
+                zgui.backend.draw(pass);
+            }
+
+            break :commands encoder.finish(null);
+        };
+        defer commands.release();
+
+        gctx.submit(&.{commands});
+        _ = gctx.present();
+    }
+};
