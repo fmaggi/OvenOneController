@@ -37,6 +37,8 @@ pub fn deinit(self: *App) void {
     if (self.oven) |*oven| {
         oven.disconnect();
     }
+    self.curve0.deinit();
+    self.curve1.deinit();
 }
 
 fn onUnknownError() !void {
@@ -183,6 +185,9 @@ fn changeState(self: *App, to: ActiveLayer) !void {
     log.debug("changing state", .{});
     if (to == self.active) return;
 
+    self.curve0.clear();
+    self.curve1.clear();
+
     if (self.active == .monitor) {
         if (self.oven) |oven| {
             try oven.stopMonitor();
@@ -237,6 +242,7 @@ fn curveMaker(self: *App, w: f32, h: f32) !void {
         zgui.sameLine(.{});
 
         if (zgui.button("Leer", .{})) {
+            self.curve0.clear();
             const oven = self.oven orelse return Oven.Error.NoConnection;
             try oven.getCurve(index, &self.curve0);
         }
@@ -352,17 +358,14 @@ fn tablePoints(curve: *Oven.TemperatureCurve) !?usize {
         }
     }
 
-    zgui.separator();
-
-    const buttons = &.{"Agregar punto"};
-
-    var w: f32 = 0;
-    w += zgui.calcTextSize(buttons[0], .{})[0];
-    w += widgets.xPadding();
-    widgets.alignForWidth(w, 0.5);
-
-    if (zgui.button(buttons[0], .{})) {
+    if (zgui.button("Agregar punto", .{})) {
         try curve.addPoint(0, 0);
+    }
+
+    zgui.sameLine(.{});
+
+    if (zgui.button("Limpiar", .{})) {
+        curve.clear();
     }
 
     return to_delete;
