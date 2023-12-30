@@ -808,7 +808,7 @@ pub fn bytesAvailable(port: std.fs.File) !usize {
             if (ClearCommError(port.handle, null, &comstat) != 0) {
                 return error.Unexpected;
             }
-            return comstat.cbInQue;
+            return @intCast(comstat.cbInQue);
         },
         .linux => {
             const IOCINQ: u32 = std.os.linux.T.IOCINQ;
