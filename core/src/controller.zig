@@ -45,8 +45,6 @@ pub fn connect(port: Controller.SerialPortDescription) !Controller {
         .handshake = .none,
     });
 
-    // try s.send(Commands.Talk);
-
     return s;
 }
 
@@ -72,7 +70,6 @@ pub fn startMonitor(self: *Controller, curve_index: u8, actual: *TemperatureCurv
 
         actual: *TemperatureCurve,
         expected: *TemperatureCurve,
-        ctx: *SinkContext,
         state: State = .header,
         time: u16 = 0,
 
@@ -107,7 +104,7 @@ pub fn startMonitor(self: *Controller, curve_index: u8, actual: *TemperatureCurv
         }
     };
 
-    const mon: Monitor = .{ .actual = actual, .expected = expected, .ctx = &self.ctx };
+    const mon: Monitor = .{ .actual = actual, .expected = expected };
     try self.startReceive(u16, mon);
 }
 
@@ -137,7 +134,6 @@ pub fn getPID(self: *Controller, pid: *PID) !void {
         const State = enum { P, I, D };
 
         pid: *PID,
-        ctx: *SinkContext,
         state: State = .P,
 
         pub fn put(g: *Self, data: u32) !Controller.ReceiverAction {
@@ -160,7 +156,7 @@ pub fn getPID(self: *Controller, pid: *PID) !void {
         }
     };
 
-    const getter: Getter = .{ .pid = pid, .ctx = &self.ctx };
+    const getter: Getter = .{ .pid = pid };
 
     try self.startReceive(u32, getter);
 }
@@ -238,7 +234,7 @@ pub fn startReceive(self: *Controller, comptime D: type, sink: anytype) !void {
 
     self.ctx.active = true;
 
-    const t = try std.Thread.spawn(.{}, receive, .{ D, self.fd, sink });
+    const t = try std.Thread.spawn(.{}, receive, .{ D, self.fd, sink, &self.ctx });
     t.detach();
 }
 
@@ -255,9 +251,9 @@ fn receive(comptime D: type, fd: std.fs.File, sink: anytype) void {
     };
 }
 
-fn receiveImpl(comptime D: type, fd: std.fs.File, sink: anytype) !void {
-    sink.ctx.running = true;
-    defer sink.ctx.running = false;
+fn receiveImpl(comptime D: type, fd: std.fs.File, sink: anytype, ctx: *SinkContext) !void {
+    ctx.running = true;
+    defer ctx.running = false;
 
     log.debug("Entering receiving thread", .{});
     defer log.debug("Leaving receiving thread", .{});
