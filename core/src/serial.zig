@@ -603,6 +603,11 @@ pub const Handshake = enum {
     hardware,
 };
 
+pub const ReadMode = enum {
+    blocking,
+    non_blocking,
+};
+
 pub const SerialConfig = struct {
     /// Symbol rate in bits/second. Not that these
     /// include also parity and stop bits.
@@ -620,6 +625,9 @@ pub const SerialConfig = struct {
 
     /// Defines the handshake protocol used.
     handshake: Handshake = .none,
+
+    // Whether to block on read until there is data available
+    read_mode: ReadMode = .non_blocking,
 };
 
 const CBAUD = 0o000000010017; //Baud speed mask (not in POSIX).
@@ -743,7 +751,7 @@ pub fn configureSerialPort(port: std.fs.File, config: SerialConfig) !void {
             settings.ispeed = baudmask;
             settings.ospeed = baudmask;
 
-            settings.cc[VMIN] = 1;
+            settings.cc[VMIN] = if (config.read_mode == .non_blocking) @as(u1, 1) else @as(u1, 0);
             settings.cc[VSTOP] = 0x13; // XOFF
             settings.cc[VSTART] = 0x11; // XON
             settings.cc[VTIME] = 0;
@@ -792,6 +800,91 @@ pub fn flushSerialPort(port: std.fs.File, input: bool, output: bool) !void {
         else => @compileError("unsupported OS, please implement!"),
     }
 }
+
+pub fn bytesAvailable(port: std.fs.File) !usize {
+    switch (builtin.os.tag) {
+        .windows => {
+            var comstat: COMSTAT = std.mem.zeroes(COMSTAT);
+            if (!ClearCommError(port.handle, null, &comstat)) {
+                return error.Unexpected;
+            }
+            return comstat.cbInQue;
+        },
+        .linux => {
+            const IOCINQ: u32 = std.os.linux.T.IOCINQ;
+            var bytes: c_int = 0xAA;
+
+            if (std.os.linux.ioctl(port.handle, IOCINQ, @intFromPtr(&bytes)) != 0) {
+                return error.Unexpected;
+            }
+            if (bytes == 0xAA) {
+                return error.Unexpected;
+            }
+
+            return @intCast(bytes);
+        },
+        else => @compileError("Unimplemented!"),
+    }
+}
+
+const COMSTATFlags = struct {
+    fCtsHold: u1,
+    fDsrHold: u1,
+    fRlsdHold: u1,
+    fXoffHold: u1,
+    fXoffSent: u1,
+    fEof: u1,
+    fTxim: u1,
+    fReserved: u25,
+    // TODO: Packed structs please
+    pub fn fromNumeric(value: u32) COMSTATFlags {
+        var flags: COMSTATFlags = undefined;
+        flags.fCtsHold = @as(u1, @truncate(value >> 0)); // u1
+        flags.fDsrHold = @as(u1, @truncate(value >> 1)); // u1
+        flags.fRlsdHold = @as(u1, @truncate(value >> 2)); // u1
+        flags.fXoffHold = @as(u1, @truncate(value >> 3)); // u1
+        flags.fXoffSent = @as(u1, @truncate(value >> 4)); // u2
+        flags.fEof = @as(u1, @truncate(value >> 5)); // u1
+        flags.fTxim = @as(u1, @truncate(value >> 6)); // u1
+        flags.fReserved = @as(u25, @truncate(value >> 7)); // u1
+        return flags;
+    }
+
+    pub fn toNumeric(self: COMSTATFlags) u32 {
+        var value: u32 = 0;
+        value += @as(u32, self.fCtsHold) << 0; // u1
+        value += @as(u32, self.fDsrHold) << 1; // u1
+        value += @as(u32, self.fRlsdHold) << 2; // u1
+        value += @as(u32, self.fXoffHold) << 3; // u1
+        value += @as(u32, self.fXoffSent) << 4; // u2
+        value += @as(u32, self.fEof) << 5; // u1
+        value += @as(u32, self.fTxim) << 6; // u1
+        value += @as(u32, self.fReserved) << 7; // u1
+        return value;
+    }
+};
+
+const COMSTAT = extern struct {
+    const Self = @This();
+    flags: u32,
+    cbInQue: std.os.windows.DWORD,
+    cbOutQue: std.os.windows.DWORD,
+};
+
+comptime {
+    const csize = @sizeOf(COMSTAT);
+    const dsize = @sizeOf(std.os.windows.DWORD) * 3;
+    if (csize * 8 != @bitSizeOf(COMSTAT)) {
+        @compileLog("WHAT");
+    }
+
+    if (csize != dsize) {
+        @compileLog("COMSTAT size: ", csize);
+        @compileLog("Expected ", dsize);
+    }
+}
+
+extern "kernel32" fn ClearCommError(hFile: std.os.windows.HANDLE, lpErrors: ?*std.os.windows.DWORD, lpState: ?*COMSTAT) callconv(std.os.windows.WINAPI) std.os.windows.BOOL;
 
 pub const ControlPins = struct {
     rts: ?bool = null,

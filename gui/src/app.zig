@@ -65,6 +65,7 @@ pub fn update(self: *App) !void {
     try widgets.modal("GradTooHighPopup", "La pendiente de la curva es demasiado alta", .{}, .{});
     try widgets.modal("NoConnectionPopup", "Conexion inexistente", .{}, .{});
     try widgets.modal("SuccessPopup", "Un exito!", .{}, .{});
+    try widgets.modal("AlreadyRunningPopup", "El receptor esta corriendo, debe pararlo primero", .{}, .{});
     try widgets.modal("UnknownError", "Unknown Error: {s}", .{S.err}, .{ .on_close = onUnknownError });
 
     self.mainWindow() catch |e| {
@@ -73,6 +74,7 @@ pub fn update(self: *App) !void {
             Oven.TemperatureCurve.Error.BadCurve => zgui.openPopup("BadCurvePopup", .{}),
             Oven.TemperatureCurve.Error.GradientTooHigh => zgui.openPopup("GradTooHighPopup", .{}),
             Oven.Error.NoConnection => zgui.openPopup("NoConnectionPopup", .{}),
+            Oven.Error.AlreadyRunning => zgui.openPopup("AlreadyRunningPopup", .{}),
             else => {
                 S.err = @errorName(e);
                 zgui.openPopup("UnknownError", .{});
@@ -106,7 +108,7 @@ fn mainWindow(self: *App) !void {
 
     if (zgui.beginMenuBar()) {
         defer zgui.endMenuBar();
-        if (self.oven) |con| {
+        if (self.oven) |*con| {
             if (zgui.beginMenu(@ptrCast(&con.port_name), true)) {
                 defer zgui.endMenu();
                 if (zgui.menuItem("Modo programacion", .{})) {
@@ -117,15 +119,28 @@ fn mainWindow(self: *App) !void {
                     try con.send(Oven.Commands.Stop);
                 }
 
+                if (zgui.menuItem("Pausar recepcion", .{})) {
+                    try con.stopReception();
+                }
+
                 if (zgui.menuItem("Desconectar", .{})) {
-                    if (self.oven) |*oven| {
-                        oven.disconnect();
-                    }
+                    con.disconnect();
                     self.oven = null;
                 }
             }
 
             zgui.text("Conectado", .{});
+            if (zgui.isItemClicked(.left)) {
+                con.disconnect();
+                self.oven = null;
+            }
+
+            if (con.isReceiving()) {
+                zgui.text("Recibiendo", .{});
+                if (zgui.isItemClicked(.left)) {
+                    try con.stopReception();
+                }
+            }
         } else {
             var buf: [50]u8 = undefined;
             var fba = std.heap.FixedBufferAllocator.init(&buf);
@@ -138,7 +153,9 @@ fn mainWindow(self: *App) !void {
                     defer fba.reset();
 
                     if (zgui.menuItem(pn, .{})) {
-                        self.oven = try Oven.connect(port);
+                        const oven = try Oven.connect(port);
+                        try oven.send(Oven.Commands.Talk);
+                        self.oven = oven;
                     }
                 }
             }
@@ -185,20 +202,21 @@ fn changeState(self: *App, to: ActiveLayer) !void {
     log.debug("changing state", .{});
     if (to == self.active) return;
 
-    self.curve0.clear();
-    self.curve1.clear();
-
     if (self.active == .monitor) {
-        if (self.oven) |oven| {
-            try oven.stopMonitor();
+        if (self.oven) |*oven| {
+            try oven.stopReception();
+            try oven.send(Oven.Commands.Talk);
         }
     }
 
     if (to == .pid_editor) {
-        if (self.oven) |oven| {
+        if (self.oven) |*oven| {
             oven.getPID(&self.pid) catch {};
         }
     }
+
+    self.curve0.clear();
+    self.curve1.clear();
 
     self.active = to;
 }
@@ -238,14 +256,6 @@ fn curveMaker(self: *App, w: f32, h: f32) !void {
             try oven.sendCurve(index, &self.curve0);
             zgui.openPopup("SuccessPopup", .{});
         }
-
-        zgui.sameLine(.{});
-
-        if (zgui.button("Leer", .{})) {
-            self.curve0.clear();
-            const oven = self.oven orelse return Oven.Error.NoConnection;
-            try oven.getCurve(index, &self.curve0);
-        }
     }
 
     zgui.sameLine(.{ .spacing = 10 });
@@ -262,9 +272,6 @@ fn curveMaker(self: *App, w: f32, h: f32) !void {
 }
 
 fn monitor(self: *App, w: f32, h: f32) !void {
-    self.curve0.ensureSameSize();
-    self.curve1.ensureSameSize();
-
     const style = zgui.getStyle();
     const selectorSize = zgui.calcTextSize("AA", .{})[1] + style.frame_padding[1] * 3;
 
@@ -275,8 +282,11 @@ fn monitor(self: *App, w: f32, h: f32) !void {
     zgui.sameLine(.{});
 
     if (zgui.button("Empezar", .{})) {
-        const oven = self.oven orelse return Oven.Error.NoConnection;
-        try oven.startMonitor(index, &self.curve0, &self.curve1);
+        if (self.oven) |*oven| {
+            try oven.startMonitor(index, &self.curve0, &self.curve1);
+        } else {
+            return Oven.Error.NoConnection;
+        }
     }
 
     zgui.sameLine(.{});
@@ -333,7 +343,12 @@ fn tablePoints(curve: *Oven.TemperatureCurve) !?usize {
         zgui.tableHeadersRow();
 
         var buf: [15:0]u8 = undefined;
-        for (curve.time.items, 0..) |_, index| {
+
+        const len = if (curve.temperature.items.len < curve.time.items.len)
+            curve.temperature.items.len
+        else
+            curve.time.items.len;
+        for (0..len) |index| {
             zgui.pushStyleColor4f(.{ .idx = .frame_bg, .c = color });
 
             _ = zgui.tableNextColumn();
@@ -399,16 +414,17 @@ fn plotEditable(label: [:0]const u8, curve: *Oven.TemperatureCurve) void {
         }
     }
 
-    zgui.plot.plotLine(label, u16, .{
-        .xv = curve.time.items,
-        .yv = curve.temperature.items,
-    });
+    plot(label, curve);
 }
 
 fn plot(label: [:0]const u8, curve: *const Oven.TemperatureCurve) void {
+    const len = if (curve.temperature.items.len < curve.time.items.len)
+        curve.temperature.items.len
+    else
+        curve.time.items.len;
     zgui.plot.plotLine(label, u16, .{
-        .xv = curve.time.items,
-        .yv = curve.temperature.items,
+        .xv = curve.time.items[0..len],
+        .yv = curve.temperature.items[0..len],
     });
 }
 
