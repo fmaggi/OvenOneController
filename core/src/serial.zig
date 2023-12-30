@@ -805,7 +805,7 @@ pub fn bytesAvailable(port: std.fs.File) !usize {
     switch (builtin.os.tag) {
         .windows => {
             var comstat: COMSTAT = std.mem.zeroes(COMSTAT);
-            if (!ClearCommError(port.handle, null, &comstat)) {
+            if (ClearCommError(port.handle, null, &comstat) != 0) {
                 return error.Unexpected;
             }
             return comstat.cbInQue;
