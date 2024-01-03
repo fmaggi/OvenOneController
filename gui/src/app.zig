@@ -68,18 +68,13 @@ pub fn update(self: *App) !void {
     try widgets.modal("AlreadyRunningPopup", "El receptor esta corriendo, debe pararlo primero", .{}, .{});
     try widgets.modal("UnknownError", "Unknown Error: {s}", .{S.err}, .{ .on_close = onUnknownError });
 
-    self.mainWindow() catch |e| {
-        switch (e) {
-            Oven.TemperatureCurve.Error.NotEnoughPoints => zgui.openPopup("ZeroSizePopup", .{}),
-            Oven.TemperatureCurve.Error.BadCurve => zgui.openPopup("BadCurvePopup", .{}),
-            Oven.TemperatureCurve.Error.GradientTooHigh => zgui.openPopup("GradTooHighPopup", .{}),
-            Oven.Error.NoConnection => zgui.openPopup("NoConnectionPopup", .{}),
-            Oven.Error.AlreadyRunning => zgui.openPopup("AlreadyRunningPopup", .{}),
-            else => {
-                S.err = @errorName(e);
-                zgui.openPopup("UnknownError", .{});
-            },
-        }
+    self.mainWindow() catch |e| switch (e) {
+        Oven.Error.NoConnection => zgui.openPopup("NoConnectionPopup", .{}),
+        Oven.Error.AlreadyRunning => zgui.openPopup("AlreadyRunningPopup", .{}),
+        else => {
+            S.err = @errorName(e);
+            zgui.openPopup("UnknownError", .{});
+        },
     };
 }
 
@@ -344,10 +339,7 @@ fn tablePoints(curve: *Oven.TemperatureCurve) !?usize {
 
         var buf: [15:0]u8 = undefined;
 
-        const len = if (curve.temperature.items.len < curve.time.items.len)
-            curve.temperature.items.len
-        else
-            curve.time.items.len;
+        const len = curve.len();
         for (0..len) |index| {
             zgui.pushStyleColor4f(.{ .idx = .frame_bg, .c = color });
 
@@ -418,10 +410,7 @@ fn plotEditable(label: [:0]const u8, curve: *Oven.TemperatureCurve) void {
 }
 
 fn plot(label: [:0]const u8, curve: *const Oven.TemperatureCurve) void {
-    const len = if (curve.temperature.items.len < curve.time.items.len)
-        curve.temperature.items.len
-    else
-        curve.time.items.len;
+    const len = curve.len();
     zgui.plot.plotLine(label, u16, .{
         .xv = curve.time.items[0..len],
         .yv = curve.temperature.items[0..len],

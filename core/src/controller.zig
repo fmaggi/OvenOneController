@@ -81,7 +81,6 @@ pub fn startMonitor(self: *Controller, curve_index: u8, actual: *TemperatureCurv
             switch (s.state) {
                 .header => {
                     if (data == Self.HEADER) {
-                        log.debug("Header", .{});
                         s.state = .time;
                     }
                 },
@@ -90,7 +89,6 @@ pub fn startMonitor(self: *Controller, curve_index: u8, actual: *TemperatureCurv
                     s.state = .temp0;
                 },
                 .temp0 => {
-                    log.debug("{} {}", .{ s.time, data });
                     try s.actual.addPoint(s.time, data);
                     s.state = .temp1;
                 },
@@ -178,12 +176,19 @@ pub fn sendPID(self: Controller, pid: PID) !void {
 pub fn sendCurve(self: Controller, curve_index: u8, curve: *const TemperatureCurve) !void {
     log.debug("sending curve {}", .{curve_index});
 
-    var points: [CurvePoints]u16 = undefined;
-    try curve.getSamples(&points);
-
     try self.send(Commands.Curve);
     try self.send(curve_index);
-    try self.send(points);
+
+    var it = curve.iterator();
+    while (it.next()) |p| {
+        try self.send(p.time);
+        try self.send(p.temperature);
+    }
+
+    while (it.complete()) |p| {
+        try self.send(p.time);
+        try self.send(p.temperature);
+    }
 }
 
 pub fn send(self: Controller, data: anytype) !void {
@@ -245,8 +250,8 @@ const SinkContext = struct {
     active: bool = false,
 };
 
-fn receive(comptime D: type, fd: std.fs.File, sink: anytype) void {
-    receiveImpl(D, fd, sink) catch |e| {
+fn receive(comptime D: type, fd: std.fs.File, sink: anytype, ctx: *SinkContext) void {
+    receiveImpl(D, fd, sink, ctx) catch |e| {
         log.err("Error at receiving thread {s}", .{@errorName(e)});
     };
 }
@@ -266,7 +271,7 @@ fn receiveImpl(comptime D: type, fd: std.fs.File, sink: anytype, ctx: *SinkConte
     var s = sink;
     var action: ReceiverAction = .Continue;
 
-    while (action == .Continue and sink.ctx.active) {
+    while (action == .Continue and ctx.active) {
         const ba = try serial.bytesAvailable(fd);
         if (ba == 0) {
             std.time.sleep(100);
