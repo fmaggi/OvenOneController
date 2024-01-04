@@ -4,6 +4,7 @@ const mode = @import("builtin").mode;
 pub const Error = error{
     NoConnection,
     AlreadyRunning,
+    CurveTooLong,
 };
 
 const CurvePoints = 500;
@@ -176,16 +177,21 @@ pub fn sendPID(self: Controller, pid: PID) !void {
 pub fn sendCurve(self: Controller, curve_index: u8, curve: *const TemperatureCurve) !void {
     log.debug("sending curve {}", .{curve_index});
 
+    const MAX_CURVE_LENGTH = 50;
+
     try self.send(Commands.Curve);
     try self.send(curve_index);
 
     var it = curve.iterator();
-    while (it.next()) |p| {
-        try self.send(p.time);
-        try self.send(p.temperature);
-    }
 
-    while (it.complete()) |p| {
+    const len: u8 = if (it.len <= MAX_CURVE_LENGTH)
+        @truncate(it.len)
+    else
+        return Error.CurveTooLong;
+
+    try self.send(len);
+
+    while (it.next()) |p| {
         try self.send(p.time);
         try self.send(p.temperature);
     }

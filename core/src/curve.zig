@@ -1,7 +1,5 @@
 const std = @import("std");
 
-const CURVE_LENGTH = 50;
-
 const TemperatureCurve = @This();
 time: std.ArrayList(u16),
 temperature: std.ArrayList(u16),
@@ -52,15 +50,21 @@ pub const CurveIterator = struct {
         temperature: u16,
     };
 
-    curve: TemperatureCurve,
+    time: []u16,
+    temperature: []u16,
+    len: usize,
     index: usize = 0,
 
     pub fn init(curve: TemperatureCurve) Self {
-        return .{ .curve = curve };
+        return .{
+            .time = curve.time.items,
+            .temperature = curve.temperature.items,
+            .len = curve.len(),
+        };
     }
 
     pub fn next(self: *Self) ?Point {
-        if (self.index >= self.curve.len()) {
+        if (self.index >= self.len) {
             return null;
         }
 
@@ -68,26 +72,8 @@ pub const CurveIterator = struct {
         self.index += 1;
 
         return .{
-            .time = self.curve.time.items[i],
-            .temperature = self.curve.temperature.items[i],
-        };
-    }
-
-    pub fn complete(self: *Self) ?Point {
-        if (self.index >= CURVE_LENGTH) {
-            return null;
-        }
-
-        if (self.next()) |p| {
-            return p;
-        }
-
-        self.index += 1;
-
-        const i = self.curve.len() - 1;
-        return .{
-            .time = self.curve.time.items[i],
-            .temperature = self.curve.temperature.items[i],
+            .time = self.time[i],
+            .temperature = self.temperature[i],
         };
     }
 };

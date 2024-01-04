@@ -60,21 +60,26 @@ pub fn update(self: *App) !void {
         var err: [:0]const u8 = undefined;
     };
 
+    try widgets.modal("NoConnectionPopup", "Conexion inexistente", .{}, .{});
     try widgets.modal("ZeroSizePopup", "La curva esta vacia!", .{}, .{});
     try widgets.modal("BadCurvePopup", "Curva invalida!", .{}, .{});
     try widgets.modal("GradTooHighPopup", "La pendiente de la curva es demasiado alta", .{}, .{});
-    try widgets.modal("NoConnectionPopup", "Conexion inexistente", .{}, .{});
+    try widgets.modal("CurveTooLongPopup", "La curva tiene demasiados puntos", .{}, .{});
     try widgets.modal("SuccessPopup", "Un exito!", .{}, .{});
     try widgets.modal("AlreadyRunningPopup", "El receptor esta corriendo, debe pararlo primero", .{}, .{});
     try widgets.modal("UnknownError", "Unknown Error: {s}", .{S.err}, .{ .on_close = onUnknownError });
 
-    self.mainWindow() catch |e| switch (e) {
-        Oven.Error.NoConnection => zgui.openPopup("NoConnectionPopup", .{}),
-        Oven.Error.AlreadyRunning => zgui.openPopup("AlreadyRunningPopup", .{}),
-        else => {
-            S.err = @errorName(e);
-            zgui.openPopup("UnknownError", .{});
-        },
+    self.mainWindow() catch |e| {
+        log.err("{s}", .{@errorName(e)});
+        switch (e) {
+            Oven.Error.CurveTooLong => zgui.openPopup("CurveTooLongPopup", .{}),
+            Oven.Error.NoConnection => zgui.openPopup("NoConnectionPopup", .{}),
+            Oven.Error.AlreadyRunning => zgui.openPopup("AlreadyRunningPopup", .{}),
+            else => {
+                S.err = @errorName(e);
+                zgui.openPopup("UnknownError", .{});
+            },
+        }
     };
 }
 
