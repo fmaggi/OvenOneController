@@ -1,6 +1,8 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 
 const TemperatureCurve = @This();
+
 time: std.ArrayList(u16),
 temperature: std.ArrayList(u16),
 
@@ -28,7 +30,7 @@ pub fn clear(self: *TemperatureCurve) void {
     self.temperature.clearRetainingCapacity();
 }
 
-pub fn addPoint(self: *TemperatureCurve, time: u16, temperature: u16) !void {
+pub fn addPoint(self: *TemperatureCurve, time: u16, temperature: u16) Allocator.Error!void {
     try self.time.append(time);
     try self.temperature.append(temperature);
 }

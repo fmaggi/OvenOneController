@@ -7,7 +7,7 @@ pub const Error = error{
     CurveTooLong,
 };
 
-const CurvePoints = 500;
+const WriteError = std.fs.File.WriteError;
 
 const log = std.log.scoped(.Controller);
 
@@ -111,14 +111,14 @@ pub fn isReceiving(self: Controller) bool {
     return self.ctx.running;
 }
 
-pub fn stopReception(self: *Controller) !void {
+pub fn stopReception(self: *Controller) WriteError!void {
     log.debug("stoping reception", .{});
     if (!self.ctx.running) return;
     try self.send(Commands.Stop);
     self.ctx.active = false;
 }
 
-pub fn stopReceptionAndWait(self: *Controller) !void {
+pub fn stopReceptionAndWait(self: *Controller) WriteError!void {
     try self.stopReception();
     while (self.ctx.running) {}
 }
@@ -160,7 +160,7 @@ pub fn getPID(self: *Controller, pid: *PID) !void {
     try self.startReceive(u32, getter);
 }
 
-pub fn sendPID(self: Controller, pid: PID) !void {
+pub fn sendPID(self: Controller, pid: PID) WriteError!void {
     log.debug("Sending PID", .{});
     if (comptime mode == .Debug) {
         pid.format(std.io.getStdOut().writer(), 10000) catch {};
@@ -174,7 +174,7 @@ pub fn sendPID(self: Controller, pid: PID) !void {
     try self.send(pid.d);
 }
 
-pub fn sendCurve(self: Controller, curve_index: u8, curve: *const TemperatureCurve) !void {
+pub fn sendCurve(self: Controller, curve_index: u8, curve: *const TemperatureCurve) WriteError!void {
     log.debug("sending curve {}", .{curve_index});
 
     const MAX_CURVE_LENGTH = 50;
@@ -197,7 +197,7 @@ pub fn sendCurve(self: Controller, curve_index: u8, curve: *const TemperatureCur
     }
 }
 
-pub fn send(self: Controller, data: anytype) !void {
+pub fn send(self: Controller, data: anytype) WriteError!void {
     const T = @TypeOf(data);
 
     switch (@typeInfo(T)) {
@@ -211,14 +211,14 @@ pub fn send(self: Controller, data: anytype) !void {
     }
 }
 
-fn sendSlice(self: Controller, comptime T: type, data: []const T) !void {
+fn sendSlice(self: Controller, comptime T: type, data: []const T) WriteError!void {
     log.debug("[slice] {any}", .{data});
     for (data) |elem| {
         try sendSingle(self, T, elem);
     }
 }
 
-fn sendSingle(self: Controller, comptime T: type, data: T) !void {
+fn sendSingle(self: Controller, comptime T: type, data: T) WriteError!void {
     log.debug("[single] {any} {}", .{ @typeName(T), data });
     const size = @sizeOf(T);
     switch (size) {
