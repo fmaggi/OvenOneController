@@ -61,10 +61,20 @@ pub fn update(self: *App) !void {
     };
 
     try widgets.modal("NoConnectionPopup", "Conexion inexistente", .{}, .{});
-    try widgets.modal("ZeroSizePopup", "La curva esta vacia!", .{}, .{});
-    try widgets.modal("BadCurvePopup", "Curva invalida!", .{}, .{});
-    try widgets.modal("GradTooHighPopup", "La pendiente de la curva es demasiado alta", .{}, .{});
-    try widgets.modal("CurveTooLongPopup", "La curva tiene demasiados puntos", .{}, .{});
+    try widgets.modal(
+        "CurveTooSteepPopup",
+        "La pendiente de la curva es demasiado alta. No puede exceder {} C/s",
+        .{Oven.MAX_GRADIENT},
+        .{},
+    );
+    try widgets.modal(
+        "CurveTooLongPopup",
+        "La curva tiene demasiados puntos.Maximo {} puntos",
+        .{Oven.MAX_CURVE_LENGTH},
+        .{},
+    );
+    try widgets.modal("CurveTooShortPopup", "La curva es demasiado corta. Minimo 2 puntos", .{}, .{});
+    try widgets.modal("TempTooHighPopup", "La temperatura no puede exceder los {} C", .{Oven.MAX_TEMPERTURE}, .{});
     try widgets.modal("SuccessPopup", "Un exito!", .{}, .{});
     try widgets.modal("AlreadyRunningPopup", "El receptor esta corriendo, debe pararlo primero", .{}, .{});
     try widgets.modal("UnknownError", "Unknown Error: {s}", .{S.err}, .{ .on_close = onUnknownError });
@@ -73,6 +83,9 @@ pub fn update(self: *App) !void {
         log.err("{s}", .{@errorName(e)});
         switch (e) {
             Oven.Error.CurveTooLong => zgui.openPopup("CurveTooLongPopup", .{}),
+            Oven.Error.CurveTooShort => zgui.openPopup("CurveTooShortPopup", .{}),
+            Oven.Error.CurveTooSteep => zgui.openPopup("CurveTooSteepPopup", .{}),
+            Oven.Error.CurveTooSteep => zgui.openPopup("TempTooHighPopup", .{}),
             Oven.Error.NoConnection => zgui.openPopup("NoConnectionPopup", .{}),
             Oven.Error.AlreadyRunning => zgui.openPopup("AlreadyRunningPopup", .{}),
             else => {
@@ -428,7 +441,7 @@ fn curveSelector() usize {
     };
 
     const items = [_][:0]const u8{ "1", "2", "3" };
-    var preview = items[S.current];
+    const preview = items[S.current];
 
     if (zgui.beginCombo("Curva", .{ .preview_value = preview })) {
         for (items, 0..) |item, n| {

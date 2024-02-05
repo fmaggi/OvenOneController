@@ -1,10 +1,17 @@
 const std = @import("std");
 const mode = @import("builtin").mode;
 
+pub const MAX_CURVE_LENGTH = 50;
+pub const MAX_GRADIENT = 0.2;
+pub const MAX_TEMPERATURE = 300;
+
 pub const Error = error{
     NoConnection,
     AlreadyRunning,
     CurveTooLong,
+    CurveTooShort,
+    CurveTooSteep,
+    TempTooHigh,
 };
 
 const WriteError = std.fs.File.WriteError;
@@ -174,21 +181,43 @@ pub fn sendPID(self: Controller, pid: PID) WriteError!void {
     try self.send(pid.d);
 }
 
-pub fn sendCurve(self: Controller, curve_index: u8, curve: *const TemperatureCurve) WriteError!void {
+pub fn sendCurve(self: Controller, curve_index: u8, curve: *const TemperatureCurve) !void {
     log.debug("sending curve {}", .{curve_index});
 
-    const MAX_CURVE_LENGTH = 50;
+    var it = curve.iterator();
+    if (it.len < 2) {
+        return Error.CurveTooShort;
+    }
+
+    if (it.len > MAX_CURVE_LENGTH) {
+        return Error.CurveTooLong;
+    }
+
+    var start = it.next().?;
+    while (it.next()) |end| {
+        defer start = end;
+
+        if (start.temperature > MAX_TEMPERATURE) return Error.TempTooHigh;
+
+        const s_time: f32 = @floatFromInt(start.time);
+        const s_temp: f32 = @floatFromInt(start.temperature);
+
+        const e_time: f32 = @floatFromInt(end.time);
+        const e_temp: f32 = @floatFromInt(end.temperature);
+
+        const grad = (e_temp - s_temp) / (e_time - s_time);
+        if (grad > MAX_GRADIENT) {
+            return Error.CurveTooSteep;
+        }
+    }
 
     try self.send(Commands.Curve);
     try self.send(curve_index);
 
-    var it = curve.iterator();
+    // reset the iterator to send points
+    it.index = 0;
 
-    const len: u8 = if (it.len <= MAX_CURVE_LENGTH)
-        @truncate(it.len)
-    else
-        return Error.CurveTooLong;
-
+    const len: u8 = @truncate(it.len);
     try self.send(len);
 
     while (it.next()) |p| {
