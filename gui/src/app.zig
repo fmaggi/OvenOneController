@@ -74,7 +74,7 @@ pub fn update(self: *App) !void {
         .{},
     );
     try widgets.modal("CurveTooShortPopup", "La curva es demasiado corta. Minimo 2 puntos", .{}, .{});
-    try widgets.modal("TempTooHighPopup", "La temperatura no puede exceder los {} C", .{Oven.MAX_TEMPERTURE}, .{});
+    try widgets.modal("TempTooHighPopup", "La temperatura no puede exceder los {} C", .{Oven.MAX_TEMPERATURE}, .{});
     try widgets.modal("SuccessPopup", "Un exito!", .{}, .{});
     try widgets.modal("AlreadyRunningPopup", "El receptor esta corriendo, debe pararlo primero", .{}, .{});
     try widgets.modal("UnknownError", "Unknown Error: {s}", .{S.err}, .{ .on_close = onUnknownError });
@@ -85,7 +85,7 @@ pub fn update(self: *App) !void {
             Oven.Error.CurveTooLong => zgui.openPopup("CurveTooLongPopup", .{}),
             Oven.Error.CurveTooShort => zgui.openPopup("CurveTooShortPopup", .{}),
             Oven.Error.CurveTooSteep => zgui.openPopup("CurveTooSteepPopup", .{}),
-            Oven.Error.CurveTooSteep => zgui.openPopup("TempTooHighPopup", .{}),
+            Oven.Error.TempTooHigh => zgui.openPopup("TempTooHighPopup", .{}),
             Oven.Error.NoConnection => zgui.openPopup("NoConnectionPopup", .{}),
             Oven.Error.AlreadyRunning => zgui.openPopup("AlreadyRunningPopup", .{}),
             else => {
